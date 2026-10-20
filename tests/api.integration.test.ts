@@ -2,7 +2,7 @@ import { beforeAll, afterAll, beforeEach, describe, it, expect } from 'vitest';
 import { randomUUID, generateKeyPairSync, sign } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { Pool } from 'pg';
-import { createClient } from 'redis';
+import { createRedisClient } from '../src/database/redis.js';
 import request from 'supertest';
 import argon2 from 'argon2';
 import sharp from 'sharp';
@@ -23,7 +23,7 @@ const adminPool = new Pool({ connectionString: adminUrl });
 const testUrl = new URL(adminUrl);
 testUrl.pathname = `/${databaseName}`;
 const pool = new Pool({ connectionString: testUrl.toString(), max: 15 });
-const redis = createClient({ url: process.env.TEST_REDIS_URL ?? 'redis://localhost:56379' });
+const redis = createRedisClient(process.env.TEST_REDIS_URL ?? 'redis://localhost:56379');
 const config = readConfig({
   NODE_ENV: 'test',
   DATABASE_URL: testUrl.toString(),
@@ -762,6 +762,28 @@ describe('internal login hardening', () => {
           .send({ code_challenge: 'x'.repeat(43) })
       ).body.error.code,
     ).toBe('SSO_NOT_CONFIGURED');
+  });
+  it('fails readiness and rejects requests while Redis is unavailable, then recovers', async () => {
+    const isolatedRedis = createRedisClient(config.REDIS_URL);
+    isolatedRedis.on('error', () => {});
+    try {
+      await isolatedRedis.connect();
+      const scoped = createApp(pool, isolatedRedis, config, engine);
+      // Let each RedisStore finish loading its scripts before simulating an outage.
+      expect((await request(scoped).post('/api/v1/auth/login').send({})).status).toBe(400);
+      isolatedRedis.destroy();
+      const ready = await request(scoped).get('/ready/auth');
+      expect(ready.status).toBe(503);
+      expect(ready.body.data.redis).toBe(false);
+      const login = await request(scoped).post('/api/v1/auth/login').send({});
+      expect(login.status).toBe(503);
+      expect(login.body.error.code).toBe('RATE_LIMIT_UNAVAILABLE');
+      await isolatedRedis.connect();
+      expect((await request(scoped).get('/ready/auth')).status).toBe(200);
+      expect((await request(scoped).post('/api/v1/auth/login').send({})).status).toBe(400);
+    } finally {
+      if (isolatedRedis.isOpen) isolatedRedis.destroy();
+    }
   });
   it('keeps login, admin and auth readiness available without biometric secrets', async () => {
     const authConfig = readConfig({

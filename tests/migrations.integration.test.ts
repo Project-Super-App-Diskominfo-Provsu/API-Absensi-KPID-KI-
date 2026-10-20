@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Pool } from 'pg';
 import { createPool } from '../src/database/client.js';
-import { migrateDatabase } from '../src/database/migrate.js';
+import { migrateDatabase, verifyDatabaseSchema } from '../src/database/migrate.js';
 
 const adminUrl =
   process.env.TEST_DATABASE_URL ??
@@ -37,6 +37,33 @@ afterAll(async () => {
 });
 
 describe('database migrations', () => {
+  it('checks every required checksum while tolerating additive migrations from newer replicas', async () => {
+    await expect(verifyDatabaseSchema(pool)).rejects.toMatchObject({ code: '42P01' });
+    await migrateDatabase(pool);
+    await expect(verifyDatabaseSchema(pool)).resolves.toBeUndefined();
+    await pool.query(
+      "INSERT INTO schema_migrations(name,checksum) VALUES ('003_future.sql','future')",
+    );
+    await expect(verifyDatabaseSchema(pool)).resolves.toBeUndefined();
+    await pool.query("DELETE FROM schema_migrations WHERE name='002_sso.sql'");
+    await expect(verifyDatabaseSchema(pool)).rejects.toThrow('002_sso.sql');
+    await pool.query(
+      "UPDATE schema_migrations SET checksum='changed' WHERE name='001_initial.sql'",
+    );
+    await expect(verifyDatabaseSchema(pool)).rejects.toThrow('001_initial.sql');
+  });
+
+  it('uses DDL timeouts only inside the migration transaction', async () => {
+    fixtureDirectory = await mkdtemp(join(tmpdir(), 'absensi-migration-timeout-'));
+    await writeFile(
+      join(fixtureDirectory, '001_timeout.sql'),
+      "DO $$ BEGIN IF current_setting('statement_timeout') <> '2min' THEN RAISE EXCEPTION 'wrong migration timeout'; END IF; END $$;",
+    );
+    await migrateDatabase(pool, pathToFileURL(fixtureDirectory + '/'));
+    expect((await pool.query('SHOW statement_timeout')).rows[0].statement_timeout).toBe('10s');
+    expect((await pool.query('SHOW lock_timeout')).rows[0].lock_timeout).toBe('0');
+  });
+
   it('initializes an empty database with the complete auth schema and ledger', async () => {
     expect(await migrateDatabase(pool)).toEqual(['001_initial.sql', '002_sso.sql']);
     expect((await pool.query('SELECT name,checksum FROM schema_migrations')).rowCount).toBe(2);

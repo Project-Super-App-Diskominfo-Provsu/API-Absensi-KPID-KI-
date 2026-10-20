@@ -7,20 +7,21 @@
     "node": ">=24 <25"
   },
   "scripts": {
-    "dev": "tsx watch --env-file=.env src/server.ts",
+    "dev": "tsx watch --env-file-if-exists=.env src/server.ts",
     "build": "node scripts/build.mjs",
     "start": "node --env-file-if-exists=.env dist/server.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
-    "db:migrate": "tsx --env-file=.env scripts/migrate.ts",
+    "db:migrate": "tsx --env-file-if-exists=.env scripts/migrate.ts",
     "db:migrate:production": "node --env-file-if-exists=.env dist/database/migrate-cli.js",
-    "admin:create": "tsx --env-file=.env scripts/create-admin.ts",
-    "worker:dev": "tsx --env-file=.env src/worker/server.ts",
+    "admin:create": "tsx --env-file-if-exists=.env scripts/create-admin.ts",
+    "worker:dev": "tsx --env-file-if-exists=.env src/worker/server.ts",
     "worker:start": "node --env-file-if-exists=.env dist/worker/server.js",
     "format": "prettier --write src scripts tests vitest.config.ts vitest.integration.config.ts",
     "format:check": "prettier --check src scripts tests vitest.config.ts vitest.integration.config.ts",
-    "check:architecture": "node scripts/check-architecture.mjs"
+    "check:architecture": "node scripts/check-architecture.mjs",
+    "admin:create:production": "node --env-file-if-exists=.env dist/database/create-admin-cli.js"
   },
   "dependencies": {
     "argon2": "^0.45.1",

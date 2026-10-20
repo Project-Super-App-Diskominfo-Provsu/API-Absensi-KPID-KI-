@@ -77,6 +77,6 @@ npm run test:integration
 npm run build
 ```
 
-Build membersihkan hanya direktori `dist` milik proyek yang targetnya diverifikasi, lalu menjalankan compiler. Ini mencegah JavaScript lama dari lokasi file sebelum refactor ikut terbawa ke hasil build. Migrasi database tetap langkah terpisah, tidak dijalankan otomatis saat API mulai hidup.
+Build membersihkan hanya direktori `dist` milik proyek yang targetnya diverifikasi, lalu menjalankan compiler. Ini mencegah JavaScript lama dari lokasi file sebelum refactor ikut terbawa ke hasil build. Build tidak menjalankan migrasi. Startup image menjalankan migrasi ketika `DB_MIGRATE_ON_START=true`; mode manual memverifikasi seluruh checksum yang dibutuhkan sebelum membuka HTTP listener.
 
 Refactor struktur tidak mengubah URL endpoint, matriks kategori-lokasi, radius 50 meter, perilaku signature/idempotency, atau kebijakan fail-closed. SSO dan biometrik tetap memerlukan konfigurasi operasional; respons 503 ketika layanan tersebut belum siap bukan error kompilasi.

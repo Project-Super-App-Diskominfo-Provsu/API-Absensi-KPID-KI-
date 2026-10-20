@@ -10,6 +10,37 @@ describe('runtime environment', () => {
     BIOMETRIC_KEY_BASE64: Buffer.alloc(32, 1).toString('base64'),
   };
 
+  it.each(['DATABASE_URL', 'REDIS_URL'])(
+    'rejects unsupported protocols for %s without exposing credentials',
+    (name) => {
+      expect(() =>
+        readConfig({ ...env, [name]: 'https://private-user:private-password@example.com' }),
+      ).toThrow(name);
+    },
+  );
+
+  it('bounds per-replica database connections', () => {
+    expect(readConfig({ ...env, DB_POOL_MAX: '8' }).DB_POOL_MAX).toBe(8);
+    for (const value of ['', '0', '-1', '1.5', '201', 'invalid'])
+      expect(() => readConfig({ ...env, DB_POOL_MAX: value })).toThrow('DB_POOL_MAX');
+  });
+
+  it('lists invalid variable names without printing their secret values', () => {
+    try {
+      readConfig({
+        ...env,
+        JWT_SECRET: 'sensitive-secret',
+        REDIS_URL: 'https://secret:password@redis',
+      });
+      throw new Error('Expected configuration failure');
+    } catch (error) {
+      expect(String(error)).toContain('JWT_SECRET');
+      expect(String(error)).toContain('REDIS_URL');
+      expect(String(error)).not.toContain('sensitive-secret');
+      expect(String(error)).not.toContain('secret:password');
+    }
+  });
+
   it('accepts runtime secrets without biometric calibration', () => {
     expect(readConfig(env).BIOMETRIC_KEY_BASE64).toBe(env.BIOMETRIC_KEY_BASE64);
   });

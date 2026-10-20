@@ -16,4 +16,5 @@ COPY --chown=node:node migrations ./migrations
 COPY package.json ./
 USER node
 EXPOSE 3000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=180s --retries=3 CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/ready/auth').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 CMD ["node", "--env-file-if-exists=/app/.env", "dist/server.js"]

@@ -19,6 +19,7 @@ import { type FaceEngine } from './modules/face/face.types.js';
 import { attendanceRoutes } from './modules/attendance/attendance.route.js';
 import { ssoRoutes } from './modules/sso/sso.route.js';
 import type { SsoProvider } from './modules/sso/sso.service.js';
+import { ApiError } from './shared/errors/api-error.js';
 import { errorHandler } from './middleware/error-handler.js';
 import { hash } from './shared/security/crypto.js';
 import { openapi } from './docs/openapi.js';
@@ -118,7 +119,17 @@ export function createApp(
       legacyHeaders: false,
       store: new RedisStore({
         prefix: prefix + rateNamespace,
-        sendCommand: (...args: string[]) => redis.sendCommand(args),
+        sendCommand: async (...args: string[]) => {
+          try {
+            return await redis.sendCommand(args);
+          } catch {
+            throw new ApiError(
+              503,
+              'RATE_LIMIT_UNAVAILABLE',
+              'Layanan pembatasan permintaan belum tersedia.',
+            );
+          }
+        },
       }),
       keyGenerator,
       skipSuccessfulRequests,

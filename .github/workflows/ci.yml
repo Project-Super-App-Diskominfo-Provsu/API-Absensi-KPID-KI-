@@ -49,3 +49,10 @@ jobs:
       - run: npm run test:integration
       - run: npm run build
       - run: npm audit --audit-level=high
+      - run: docker build -t absensi-api:ci .
+      - name: Verify native dependencies in production image
+        run: >-
+          docker run --rm absensi-api:ci node --input-type=module -e
+          'import argon2 from "argon2"; import sharp from "sharp"; import * as ort from "onnxruntime-node";
+          if (!(await argon2.verify(await argon2.hash("ci-smoke-password"), "ci-smoke-password"))) process.exit(1);
+          if (!sharp.versions.sharp || typeof ort.InferenceSession.create !== "function") process.exit(1);'

@@ -4,19 +4,41 @@ import type { Pool } from 'pg';
 import { transaction } from './client.js';
 import { requirePostgis } from './postgis.js';
 
-export async function migrateDatabase(
-  pool: Pool,
-  directory = new URL('../../migrations/', import.meta.url),
-): Promise<string[]> {
+async function readMigrations(directory: URL) {
   const names = (await readdir(directory)).filter((name) => name.endsWith('.sql')).sort();
   if (!names.length) throw new Error('No SQL migrations found. Include migrations in the image.');
-  const migrations = await Promise.all(
+  return Promise.all(
     names.map(async (name) => {
       const sql = await readFile(new URL(name, directory), 'utf8');
       return { name, sql, checksum: createHash('sha256').update(sql).digest('hex') };
     }),
   );
+}
+
+export async function verifyDatabaseSchema(
+  pool: Pool,
+  directory = new URL('../../migrations/', import.meta.url),
+): Promise<void> {
+  const migrations = await readMigrations(directory);
+  const { rows } = await pool.query<{ name: string; checksum: string }>(
+    'SELECT name,checksum FROM schema_migrations',
+  );
+  const applied = new Map(rows.map((row) => [row.name, row.checksum]));
+  for (const { name, checksum } of migrations) {
+    if (applied.get(name) !== checksum)
+      throw new Error(`Missing or changed migration: ${name}. Run db:migrate:production.`);
+  }
+}
+
+export async function migrateDatabase(
+  pool: Pool,
+  directory = new URL('../../migrations/', import.meta.url),
+): Promise<string[]> {
+  const migrations = await readMigrations(directory);
   return transaction(pool, async (db) => {
+    // API query deadlines are too short for DDL/PostGIS and replica lock contention.
+    await db.query("SET LOCAL statement_timeout = '120s'");
+    await db.query("SET LOCAL lock_timeout = '60s'");
     await db.query('SELECT pg_advisory_xact_lock(8123481)');
     await db.query(
       'CREATE TABLE IF NOT EXISTS schema_migrations(name text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz DEFAULT now())',
