@@ -84,7 +84,7 @@ export function createApp(
   });
   app.get('/ready', async (_req, res) => {
     const result = await Promise.allSettled([
-      pool.query('SELECT 1 FROM category_office_permissions LIMIT 1'),
+      pool.query('SELECT PostGIS_Version() FROM category_office_permissions LIMIT 1'),
       redis.ping(),
       engine.ready(),
     ]);
@@ -177,7 +177,7 @@ export function createApp(
     adminRoutes(pool),
     deviceRoutes(pool),
     faceRoutes(pool, config, engine),
-    attendanceRoutes(pool, redis, config, engine),
+    attendanceRoutes(pool, config, engine),
   );
   app.use((_req, res) =>
     res.status(404).json({

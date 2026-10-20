@@ -1,5 +1,3 @@
-import { GEO_MAX_LATITUDE } from '../modules/office/office.geo.js';
-
 const ref = (name: string) => ({ $ref: `#/components/schemas/${name}` });
 const json = (schema: unknown) => ({ 'application/json': { schema } });
 const object = (
@@ -110,7 +108,7 @@ export const openapi = {
       OfficePatch: object(
         {
           name: str,
-          latitude: { type: 'number', minimum: -GEO_MAX_LATITUDE, maximum: GEO_MAX_LATITUDE },
+          latitude: { type: 'number', minimum: -90, maximum: 90 },
           longitude: { type: 'number', minimum: -180, maximum: 180 },
           radius_m: { const: 50 },
           max_gps_accuracy_m: { type: 'number', exclusiveMinimum: 0, maximum: 50 },
@@ -170,8 +168,7 @@ export const openapi = {
           image: { type: 'string', format: 'binary', description: 'JPEG/PNG, maksimum 5 MiB.' },
           latitude: {
             ...str,
-            description:
-              'Derajat desimal; Redis GEO mendukung latitude antara -85.05112878 dan 85.05112878.',
+            description: 'Latitude WGS84 dalam derajat desimal, antara -90 dan 90.',
           },
           longitude: str,
           accuracy_m: str,

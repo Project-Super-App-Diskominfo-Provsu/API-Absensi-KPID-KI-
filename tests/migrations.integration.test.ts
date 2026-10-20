@@ -37,30 +37,35 @@ afterAll(async () => {
 });
 
 describe('database migrations', () => {
-  it('recovers a failed historical PostGIS bootstrap on plain PostgreSQL without losing data', async () => {
+  it('upgrades the portable baseline to PostGIS without changing existing coordinates or data', async () => {
+    fixtureDirectory = await mkdtemp(join(tmpdir(), 'absensi-portable-upgrade-'));
+    for (const name of ['001_initial_postgres.sql', '002_sso.sql', '003_office_coordinates.sql']) {
+      await copyFile(
+        new URL('../migrations/' + name, import.meta.url),
+        join(fixtureDirectory, name),
+      );
+    }
+    await migrateDatabase(pool, pathToFileURL(fixtureDirectory + '/'));
+    await pool.query("INSERT INTO units(name) VALUES ('preserved')");
+    await pool.query('UPDATE offices SET latitude=3.5,longitude=98.6');
+    const offices = (await pool.query('SELECT * FROM offices ORDER BY id')).rows;
+    const ledger = (await pool.query('SELECT * FROM schema_migrations ORDER BY name')).rows;
     expect((await pool.query("SELECT 1 FROM pg_extension WHERE extname='postgis'")).rowCount).toBe(
       0,
     );
-    await pool.query('CREATE TABLE preserved_before_deploy(value text)');
-    await pool.query("INSERT INTO preserved_before_deploy VALUES ('preserved')");
-    fixtureDirectory = await mkdtemp(join(tmpdir(), 'absensi-failed-bootstrap-'));
-    await copyFile(
-      new URL('../migrations/001_initial.sql', import.meta.url),
-      join(fixtureDirectory, '001_initial.sql'),
-    );
-    await expect(
-      migrateDatabase(pool, pathToFileURL(fixtureDirectory + '/')),
-    ).rejects.toMatchObject({ code: '0A000' });
+    expect(await migrateDatabase(pool)).toEqual(['004_postgis_geofencing.sql']);
+    expect((await pool.query('SELECT * FROM offices ORDER BY id')).rows).toEqual(offices);
+    expect((await pool.query("SELECT * FROM units WHERE name='preserved'")).rowCount).toBe(1);
     expect(
-      (await pool.query("SELECT to_regclass('schema_migrations') AS ledger")).rows[0].ledger,
-    ).toBeNull();
-    await migrateDatabase(pool);
-    expect((await pool.query('SELECT * FROM preserved_before_deploy')).rows).toEqual([
-      { value: 'preserved' },
-    ]);
-    expect((await pool.query("SELECT 1 FROM pg_extension WHERE extname='postgis'")).rowCount).toBe(
-      0,
-    );
+      (
+        await pool.query(
+          "SELECT * FROM schema_migrations WHERE name <> '004_postgis_geofencing.sql' ORDER BY name",
+        )
+      ).rows,
+    ).toEqual(ledger);
+    expect((await pool.query('SELECT PostGIS_Version() AS version')).rows[0].version).toBeTruthy();
+    await verifyDatabaseSchema(pool);
+    expect(await migrateDatabase(pool)).toEqual([]);
   });
 
   it('rejects conflicting baseline histories rather than guessing which data to adopt', async () => {
@@ -116,8 +121,9 @@ describe('database migrations', () => {
       '001_initial_postgres.sql',
       '002_sso.sql',
       '003_office_coordinates.sql',
+      '004_postgis_geofencing.sql',
     ]);
-    expect((await pool.query('SELECT name,checksum FROM schema_migrations')).rowCount).toBe(3);
+    expect((await pool.query('SELECT name,checksum FROM schema_migrations')).rowCount).toBe(4);
     await expect(
       pool.query(
         'SELECT u.auth_mode,s.expires_at FROM users u LEFT JOIN refresh_sessions s ON false LIMIT 0',
@@ -142,8 +148,8 @@ describe('database migrations', () => {
 
   it('serializes simultaneous migrations from multiple replicas', async () => {
     const results = await Promise.all([migrateDatabase(pool), migrateDatabase(pool)]);
-    expect(results.map((names) => names.length).sort()).toEqual([0, 3]);
-    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(3);
+    expect(results.map((names) => names.length).sort()).toEqual([0, 4]);
+    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(4);
     expect((await pool.query('SELECT * FROM offices')).rowCount).toBe(3);
   });
 
@@ -157,7 +163,7 @@ describe('database migrations', () => {
       'Applied migration changed: 001_initial_postgres.sql',
     );
     expect((await pool.query("SELECT * FROM units WHERE name='Preserved unit'")).rowCount).toBe(1);
-    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(3);
+    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(4);
   });
 
   it('rolls back all pending schema changes and the ledger if any SQL fails', async () => {

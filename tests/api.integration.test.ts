@@ -183,7 +183,6 @@ describe('live database location rules', () => {
     it(`${category} at ${code}: ${allowed ? 'allow' : 'deny'}`, async () => {
       const result = selectOffice(
         pool,
-        redis,
         category,
         {
           latitude: 3.5,
@@ -197,40 +196,30 @@ describe('live database location rules', () => {
       if (allowed) expect((await result).code).toBe(code);
       else await expect(result).rejects.toMatchObject({ code: 'OFFICE_NOT_ALLOWED' });
     });
-  it('enforces Redis GEO radius with points just inside and outside 50m', async () => {
-    const key = `absensi:test:geo:${randomUUID()}`;
-    let center: { latitude: string; longitude: string };
-    try {
-      await redis.geoAdd(key, { longitude: 98.6, latitude: 3.5, member: 'office' });
-      center = (await redis.geoPos(key, 'office'))[0]!;
-    } finally {
-      await redis.del(key);
-    }
-    for (const [distance, allowed] of [
-      [49.99, true],
-      [50.01, false],
-    ] as const) {
-      // Redis uses this documented spherical Earth radius. Project north from
-      // the encoded office position so the 50m cutoff is tested independently of quantization.
-      const point = {
-        lat: Number(center.latitude) + ((distance / 6372797.560856) * 180) / Math.PI,
-        lng: Number(center.longitude),
-      };
-      const result = selectOffice(
-        pool,
-        redis,
-        'KPID',
-        {
-          latitude: point.lat,
-          longitude: point.lng,
-          accuracy_m: 5,
-          captured_at: new Date().toISOString(),
-          office_id: offices.DISKOMINFO_PROVSU,
-        },
-        new Date(),
-      );
-      if (allowed) expect((await result).distance_m).toBeLessThan(50);
-      else await expect(result).rejects.toMatchObject({ code: 'GEOFENCE_OUT_OF_RANGE' });
+  it('enforces geodesic 50m boundaries from the original office coordinates in all directions', async () => {
+    for (const bearing of [0, 90, 180, 270]) {
+      for (const distance of [49.75, 49.99, 50.01, 50.2]) {
+        const point = (
+          await pool.query(
+            'SELECT ST_Y(p::geometry) AS lat, ST_X(p::geometry) AS lng FROM (SELECT ST_Project(ST_SetSRID(ST_MakePoint(longitude,latitude),4326)::geography,$2::float8,$3::float8) AS p FROM offices WHERE id=$1) q',
+            [offices.DISKOMINFO_PROVSU, distance, (bearing * Math.PI) / 180],
+          )
+        ).rows[0];
+        const result = selectOffice(
+          pool,
+          'KPID',
+          {
+            latitude: point.lat,
+            longitude: point.lng,
+            accuracy_m: 5,
+            captured_at: new Date().toISOString(),
+            office_id: offices.DISKOMINFO_PROVSU,
+          },
+          new Date(),
+        );
+        if (distance < 50) expect((await result).distance_m).toBeCloseTo(distance, 4);
+        else await expect(result).rejects.toMatchObject({ code: 'GEOFENCE_OUT_OF_RANGE' });
+      }
     }
   });
   it('rejects inaccurate, stale, inactive and uncategorized locations', async () => {
@@ -242,22 +231,21 @@ describe('live database location rules', () => {
       office_id: offices.DISKOMINFO_PROVSU,
     };
     await expect(
-      selectOffice(pool, redis, 'KPID', { ...base, accuracy_m: 20 }, new Date()),
+      selectOffice(pool, 'KPID', { ...base, accuracy_m: 20 }, new Date()),
     ).rejects.toMatchObject({ code: 'GPS_ACCURACY_LOW' });
     await expect(
       selectOffice(
         pool,
-        redis,
         'KPID',
         { ...base, captured_at: new Date(Date.now() - 60000).toISOString() },
         new Date(),
       ),
     ).rejects.toMatchObject({ code: 'LOCATION_STALE' });
-    await expect(selectOffice(pool, redis, null, base, new Date())).rejects.toMatchObject({
+    await expect(selectOffice(pool, null, base, new Date())).rejects.toMatchObject({
       code: 'EMPLOYEE_CATEGORY_INVALID',
     });
     await pool.query('UPDATE offices SET active=false WHERE id=$1', [offices.DISKOMINFO_PROVSU]);
-    await expect(selectOffice(pool, redis, 'KPID', base, new Date())).rejects.toMatchObject({
+    await expect(selectOffice(pool, 'KPID', base, new Date())).rejects.toMatchObject({
       code: 'OFFICE_UNAVAILABLE',
     });
   });

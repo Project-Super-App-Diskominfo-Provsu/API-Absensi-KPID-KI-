@@ -24,6 +24,9 @@ export interface OfficeLocation {
 export interface Office extends OfficeLocation {
   distance_m: number;
 }
+export interface OfficeQueryResult extends Office {
+  within_radius: boolean;
+}
 
 export const officeFields = `o.id,o.code,o.name,o.radius_m,o.max_gps_accuracy_m,o.max_location_age_s,o.timezone,o.active,
  o.latitude,o.longitude`;
@@ -43,17 +46,23 @@ export async function checkCategoryOfficePermission(
   );
 }
 
-export async function findPermittedOffices(
+export async function findPermittedOfficesWithDistance(
   db: Db,
   categoryCode: string | null,
+  latitude: number,
+  longitude: number,
   officeId: string | null,
 ) {
-  return db.query<OfficeLocation>(
-    `SELECT ${officeFields}
+  return db.query<OfficeQueryResult>(
+    `SELECT ${officeFields},
+     ST_Distance(ST_SetSRID(ST_MakePoint(o.longitude,o.latitude),4326)::geography,
+       ST_SetSRID(ST_MakePoint($3,$2),4326)::geography) AS distance_m,
+     ST_DWithin(ST_SetSRID(ST_MakePoint(o.longitude,o.latitude),4326)::geography,
+       ST_SetSRID(ST_MakePoint($3,$2),4326)::geography,o.radius_m) AS within_radius
      FROM offices o JOIN category_office_permissions p ON p.office_id=o.id
-     WHERE p.employee_category_code=$1 AND o.active AND ($2::uuid IS NULL OR o.id=$2)
-     ORDER BY o.code`,
-    [categoryCode, officeId],
+     WHERE p.employee_category_code=$1 AND o.active AND ($4::uuid IS NULL OR o.id=$4)
+     ORDER BY distance_m,o.code`,
+    [categoryCode, latitude, longitude, officeId],
   );
 }
 
