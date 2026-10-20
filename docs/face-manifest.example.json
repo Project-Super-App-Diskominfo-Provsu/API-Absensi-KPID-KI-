@@ -1,0 +1,41 @@
+{
+  "model_version": "REPLACE_WITH_CALIBRATED_MODEL_VERSION",
+  "detector": {
+    "path": "../models/detector.onnx",
+    "sha256": "REPLACE_WITH_SHA256_HEX",
+    "license_reference": "REPLACE_WITH_LICENSE_OR_PERMISSION_REFERENCE",
+    "size": 640,
+    "score_threshold": 0.5,
+    "nms_threshold": 0.4,
+    "score_outputs": ["REPLACE_SCORE_STRIDE8", "REPLACE_SCORE_STRIDE16", "REPLACE_SCORE_STRIDE32"],
+    "box_outputs": ["REPLACE_BOX_STRIDE8", "REPLACE_BOX_STRIDE16", "REPLACE_BOX_STRIDE32"],
+    "landmark_outputs": ["REPLACE_LANDMARK_STRIDE8", "REPLACE_LANDMARK_STRIDE16", "REPLACE_LANDMARK_STRIDE32"]
+  },
+  "recognizer": {
+    "path": "../models/recognizer.onnx",
+    "sha256": "REPLACE_WITH_SHA256_HEX",
+    "license_reference": "REPLACE_WITH_LICENSE_OR_PERMISSION_REFERENCE",
+    "output": "REPLACE_EMBEDDING_OUTPUT",
+    "mean": [127.5, 127.5, 127.5],
+    "divisor": [127.5, 127.5, 127.5],
+    "color": "RGB"
+  },
+  "pad": {
+    "path": "../models/pad.onnx",
+    "sha256": "REPLACE_WITH_SHA256_HEX",
+    "license_reference": "REPLACE_WITH_LICENSE_OR_PERMISSION_REFERENCE",
+    "output": "REPLACE_PAD_OUTPUT",
+    "width": 80,
+    "height": 80,
+    "mean": [0, 0, 0],
+    "divisor": [255, 255, 255],
+    "color": "BGR",
+    "crop_scale": 2.7,
+    "live_class": 1,
+    "output_mode": "LOGITS"
+  },
+  "quality": {
+    "min_face_pixels": 100,
+    "sharpness_reference": 100
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "name": "api-absensi-kpid-ki",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "dev": "tsx watch --env-file=.env src/server.ts",
+    "build": "node scripts/build.mjs",
+    "start": "node --env-file=.env dist/server.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "db:migrate": "tsx --env-file=.env scripts/migrate.ts",
+    "admin:create": "tsx --env-file=.env scripts/create-admin.ts",
+    "worker:dev": "tsx --env-file=.env src/worker/server.ts",
+    "worker:start": "node --env-file=.env dist/worker/server.js",
+    "format": "prettier --write src scripts tests vitest.config.ts vitest.integration.config.ts",
+    "format:check": "prettier --check src scripts tests vitest.config.ts vitest.integration.config.ts",
+    "check:architecture": "node scripts/check-architecture.mjs"
+  },
+  "dependencies": {
+    "argon2": "^0.45.1",
+    "cors": "^2.8.6",
+    "express": "^5.3.0",
+    "express-rate-limit": "^8.7.1",
+    "file-type": "^22.2.0",
+    "helmet": "^8.3.0",
+    "jose": "^6.2.12",
+    "multer": "^2.4.0",
+    "onnxruntime-node": "^1.30.0",
+    "openid-client": "^6.8.8",
+    "pg": "^8.23.1",
+    "pino": "^10.4.0",
+    "rate-limit-redis": "^6.0.1",
+    "redis": "^6.3.0",
+    "sharp": "^0.35.5",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@apidevtools/swagger-parser": "^13.1.0",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/multer": "^2.3.0",
+    "@types/node": "^24.19.2",
+    "@types/pg": "^8.23.1",
+    "@types/supertest": "^7.2.1",
+    "prettier": "^3.9.10",
+    "supertest": "^7.3.1",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  }
+}
