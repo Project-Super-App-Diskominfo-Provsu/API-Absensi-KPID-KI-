@@ -23,15 +23,14 @@ Semua radius tepat 50 meter. Masuk dan pulang boleh pada kantor berbeda yang dii
 
 ## Menjalankan lokal
 
-Prasyarat: Node.js 24, npm, dan Docker Compose.
+Prasyarat: Node.js 24, npm, PostgreSQL 17 dengan PostGIS, serta Redis eksternal. Docker Compose diperlukan jika API dijalankan dalam container.
 
 ```powershell
 npm ci
 Copy-Item .env.example .env
-docker compose up -d --wait
 ```
 
-Isi `JWT_SECRET`, `BIOMETRIC_KEY_BASE64`, dan `FACE_WORKER_TOKEN` dengan tiga nilai acak yang berbeda. Perintah berikut menghasilkan satu nilai setiap dijalankan:
+Isi `DATABASE_URL` dan `REDIS_URL` ke layanan yang sudah tersedia. Isi `JWT_SECRET`, `BIOMETRIC_KEY_BASE64`, dan `FACE_WORKER_TOKEN` dengan tiga nilai acak yang berbeda. Perintah berikut menghasilkan satu nilai setiap dijalankan:
 
 ```powershell
 node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
@@ -53,7 +52,7 @@ npm run dev
 
 API berada di `http://localhost:3000`. Worker dijalankan di terminal terpisah dengan `npm run worker:dev`. `GET /health` hanya menandakan proses hidup. `GET /ready` mengembalikan 503 jika database, Redis, konfigurasi biometrik, atau worker belum siap. Endpoint autentikasi dan administrasi tetap dapat digunakan untuk menyiapkan sistem.
 
-Compose hanya menyediakan dependensi lokal pada loopback, bukan konfigurasi hosting produksi. Image aplikasi dapat dibangun dengan `docker build -t absensi-api .`; image yang sama menjalankan worker dengan command `node dist/worker/server.js`. Environment untuk container harus menunjuk hostname service database/Redis, bukan localhost host. Migrasi dijalankan sebagai langkah deployment terpisah sebelum aplikasi; container runtime tidak membawa source migrator.
+Compose menjalankan API dan menyediakan worker wajah opsional; tidak ada service atau volume database/Redis di deployment aplikasi. Database wajib mendukung PostGIS. Environment container harus menunjuk alamat layanan eksternal, bukan localhost container. Untuk layanan pada host Docker, gunakan `host.docker.internal`; untuk layanan remote, gunakan hostname remote. Migrasi dijalankan sebagai langkah deployment terpisah sebelum aplikasi; container runtime tidak membawa source migrator. Lihat [panduan Docker](docs/docker.md).
 
 Panduan [login internal, staging, dan migrasi untuk pengguna Laravel](docs/internal-auth.md) menjelaskan konfigurasi HTTPS/proxy, masa berlaku token, endpoint password/logout, dan cara menambahkan migrasi. SSO tetap dinonaktifkan sampai konfigurasi Google tersedia. Gunakan `GET /ready/auth` untuk kesiapan database dan Redis pada staging khusus login; `/ready` tetap memeriksa worker wajah juga.
 
@@ -159,7 +158,6 @@ Passive PAD, signature perangkat, dan flag mock bukan jaminan kamera/lokasi asli
 npm run typecheck
 npm run check:architecture
 npm test
-docker compose up -d --wait
 npm run test:integration
 npm run build
 npm audit
