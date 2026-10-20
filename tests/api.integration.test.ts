@@ -197,6 +197,41 @@ describe('live database location rules', () => {
       if (allowed) expect((await result).code).toBe(code);
       else await expect(result).rejects.toMatchObject({ code: 'OFFICE_NOT_ALLOWED' });
     });
+  it('holds office policy stable until attendance verification commits', async () => {
+    const verifier = await pool.connect();
+    const editor = await pool.connect();
+    try {
+      await verifier.query('BEGIN');
+      await selectOffice(
+        verifier,
+        redis,
+        'KPID',
+        {
+          latitude: 3.5,
+          longitude: 98.6,
+          accuracy_m: 5,
+          captured_at: new Date().toISOString(),
+          office_id: offices.DISKOMINFO_PROVSU,
+        },
+        new Date(),
+      );
+      await editor.query('BEGIN');
+      await editor.query("SET LOCAL lock_timeout='100ms'");
+      await expect(
+        editor.query('UPDATE offices SET active=false WHERE id=$1', [offices.DISKOMINFO_PROVSU]),
+      ).rejects.toMatchObject({ code: '55P03' });
+      await editor.query('ROLLBACK');
+      await verifier.query('COMMIT');
+      await expect(
+        editor.query('UPDATE offices SET active=false WHERE id=$1', [offices.DISKOMINFO_PROVSU]),
+      ).resolves.toMatchObject({ rowCount: 1 });
+    } finally {
+      await editor.query('ROLLBACK');
+      await verifier.query('ROLLBACK');
+      editor.release();
+      verifier.release();
+    }
+  });
   it('enforces Redis GEO radius with points just inside and outside 50m', async () => {
     const key = `absensi:test:geo:${randomUUID()}`;
     let center: { latitude: string; longitude: string };
@@ -917,6 +952,35 @@ describe('internal login hardening', () => {
       ])
     ).rows[0];
     expect(saved.expires_at.getTime()).toBe(expiry.getTime());
+  });
+  it('revokes active sessions without rewriting previously revoked history during account updates', async () => {
+    const old = await issueSession(pool, config, user, randomUUID());
+    await issueSession(pool, config, user, randomUUID());
+    const previous = (
+      await pool.query(
+        "UPDATE refresh_sessions SET revoked_at=now()-interval '1 day' WHERE token_hash=$1 RETURNING xmin::text,revoked_at",
+        [hash(old.refresh_token)],
+      )
+    ).rows[0];
+    const updated = await request(app)
+      .patch(`/api/v1/admin/users/${user}`)
+      .auth(adminAccess, { type: 'bearer' })
+      .send({ active: false });
+    expect(updated.status, updated.text).toBe(200);
+    expect(
+      (
+        await pool.query('SELECT xmin::text,revoked_at FROM refresh_sessions WHERE token_hash=$1', [
+          hash(old.refresh_token),
+        ])
+      ).rows[0],
+    ).toEqual(previous);
+    expect(
+      (
+        await pool.query('SELECT 1 FROM refresh_sessions WHERE user_id=$1 AND revoked_at IS NULL', [
+          user,
+        ])
+      ).rowCount,
+    ).toBe(0);
   });
   it('revokes a concurrently rotated child session when logout waits for its transaction', async () => {
     const family = randomUUID(),

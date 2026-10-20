@@ -61,7 +61,7 @@ export async function findSessionWithUserForUpdate(db: Db, tokenHash: string) {
 
 export async function revokeSessionFamily(db: Db, familyId: string) {
   return db.query(
-    'UPDATE refresh_sessions SET revoked_at=COALESCE(revoked_at,now()) WHERE family_id=$1',
+    'UPDATE refresh_sessions SET revoked_at=now() WHERE family_id=$1 AND revoked_at IS NULL',
     [familyId],
   );
 }

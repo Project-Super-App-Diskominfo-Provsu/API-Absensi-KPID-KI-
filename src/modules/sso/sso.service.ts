@@ -7,7 +7,7 @@ import { transaction } from '../../database/client.js';
 import { hash, token } from '../../shared/security/crypto.js';
 import { fail } from '../../shared/errors/api-error.js';
 import { issueSession } from '../auth/auth.service.js';
-import type { User } from '../auth/auth.model.js';
+import { revokeAllUserSessions, type User } from '../auth/auth.model.js';
 import {
   insertSsoLoginFlow,
   consumeSsoLoginFlow,
@@ -218,10 +218,7 @@ export async function linkSsoIdentity(
 
     const mapped = await insertSsoIdentity(db, input.user_id, config.SSO_ISSUER, input.subject);
     await updateUserAuthMode(db, input.user_id, input.auth_mode);
-    await db.query(
-      'UPDATE refresh_sessions SET revoked_at=COALESCE(revoked_at,now()) WHERE user_id=$1',
-      [input.user_id],
-    );
+    await revokeAllUserSessions(db, input.user_id);
     await audit(db, actor.id, 'SSO_IDENTITY_LINKED', mapped.rows[0]!.id, {
       user_id: input.user_id,
       auth_mode: input.auth_mode,
@@ -246,10 +243,7 @@ export async function unlinkSsoIdentity(pool: Pool, actor: User, id: string, rea
     }
     await findUserForSsoUpdate(db, owner);
     await deleteSsoIdentity(db, id);
-    await db.query(
-      'UPDATE refresh_sessions SET revoked_at=COALESCE(revoked_at,now()) WHERE user_id=$1',
-      [owner],
-    );
+    await revokeAllUserSessions(db, owner);
     await audit(db, actor.id, 'SSO_IDENTITY_UNLINKED', id, { user_id: owner, reason });
   });
 }

@@ -26,7 +26,11 @@ export class HttpFaceEngine implements FaceEngine {
         signal: AbortSignal.timeout(2000),
         headers: { authorization: `Bearer ${this.config.FACE_WORKER_TOKEN}` },
       });
-      return result.ok;
+      try {
+        return result.ok;
+      } finally {
+        await result.body?.cancel();
+      }
     } catch {
       return false;
     }
@@ -47,6 +51,7 @@ export class HttpFaceEngine implements FaceEngine {
         signal: AbortSignal.timeout(10000),
       });
       if (!result.ok) {
+        await result.body?.cancel();
         if (result.status === 422) {
           fail(422, 'FACE_QUALITY_LOW', 'Wajah tidak tunggal atau kualitas gambar tidak memadai.');
         }

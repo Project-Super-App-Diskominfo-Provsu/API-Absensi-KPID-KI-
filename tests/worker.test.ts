@@ -1,9 +1,10 @@
-import { beforeAll, afterAll, describe, it, expect } from 'vitest';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
+import { mkdtemp, writeFile, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
 import { hash } from '../src/shared/security/crypto.js';
+import * as ort from 'onnxruntime-node';
 import { OnnxFaceEngine } from '../src/worker/engine.js';
 import { arcfaceLandmarks, similarityTransform, softmax, nchw } from '../src/worker/math.js';
 import { openapi } from '../src/docs/openapi.js';
@@ -170,11 +171,45 @@ describe('ONNX worker', () => {
   });
   it('checks model integrity before loading', async () => {
     const other = join(folder, 'bad.json');
-    const { readFile } = await import('node:fs/promises');
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
     manifest.recognizer.sha256 = '0'.repeat(64);
     await writeFile(other, JSON.stringify(manifest));
-    await expect(OnnxFaceEngine.load(other)).rejects.toThrow('checksum');
+    const createOriginal = ort.InferenceSession.create.bind(ort.InferenceSession);
+    const releases: ReturnType<typeof vi.spyOn>[] = [];
+    const create = vi.spyOn(ort.InferenceSession, 'create').mockImplementation(async (...args) => {
+      const session = await createOriginal(...args);
+      releases.push(vi.spyOn(session, 'release'));
+      return session;
+    });
+    try {
+      await expect(OnnxFaceEngine.load(other)).rejects.toThrow('checksum');
+      expect(releases).toHaveLength(1);
+      expect(releases[0]).toHaveBeenCalledOnce();
+    } finally {
+      create.mockRestore();
+    }
+  });
+  it('rejects incompatible detector shapes before advertising readiness', async () => {
+    const outputs = Array.from({ length: 3 }, (_, level) => [
+      { name: `score_${level}`, shape: [1, 1], data: new Float32Array([0]) },
+      { name: `box_${level}`, shape: [1, 4], data: new Float32Array(4) },
+      { name: `landmark_${level}`, shape: [1, 10], data: new Float32Array(10) },
+    ]).flat();
+    const model = constantModel([1, 3, 640, 640], outputs);
+    await writeFile(join(folder, 'incompatible-detector.onnx'), model);
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    manifest.detector.path = 'incompatible-detector.onnx';
+    manifest.detector.sha256 = hash(model);
+    const path = join(folder, 'incompatible-detector.json');
+    await writeFile(path, JSON.stringify(manifest));
+    await expect(OnnxFaceEngine.load(path)).rejects.toThrow('tensor shapes');
+  });
+  it('rejects PAD configurations with a live class absent from the model output', async () => {
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    manifest.pad.live_class = 10;
+    const path = join(folder, 'incompatible-pad.json');
+    await writeFile(path, JSON.stringify(manifest));
+    await expect(OnnxFaceEngine.load(path)).rejects.toThrow('PAD live class not found');
   });
   it('preserves identity alignment and stable logits', () => {
     const transform = similarityTransform(arcfaceLandmarks);

@@ -61,69 +61,68 @@ export class OnnxFaceEngine {
   static async load(path: string): Promise<OnnxFaceEngine> {
     const manifest = manifestSchema.parse(JSON.parse(await readFile(path, 'utf8')));
     const base = dirname(resolve(path));
-    const sessions = [];
-    for (const asset of [manifest.detector, manifest.recognizer, manifest.pad]) {
-      const bytes = await readFile(resolve(base, asset.path));
-      if (hash(bytes) !== asset.sha256) throw new Error('Model checksum mismatch');
-      sessions.push(
-        await ort.InferenceSession.create(bytes, {
-          executionProviders: ['cpu'],
-          intraOpNumThreads: 2,
-          interOpNumThreads: 1,
-          graphOptimizationLevel: 'all',
-        }),
+    const sessions: ort.InferenceSession[] = [];
+    try {
+      for (const asset of [manifest.detector, manifest.recognizer, manifest.pad]) {
+        const bytes = await readFile(resolve(base, asset.path));
+        if (hash(bytes) !== asset.sha256) throw new Error('Model checksum mismatch');
+        sessions.push(
+          await ort.InferenceSession.create(bytes, {
+            executionProviders: ['cpu'],
+            intraOpNumThreads: 2,
+            interOpNumThreads: 1,
+            graphOptimizationLevel: 'all',
+          }),
+        );
+      }
+      const [detector, recognizer, pad] = sessions as [
+        ort.InferenceSession,
+        ort.InferenceSession,
+        ort.InferenceSession,
+      ];
+      if ([detector, recognizer, pad].some((s) => s.inputNames.length !== 1))
+        throw new Error('Each model must expose one NCHW image input');
+      for (const name of [
+        ...manifest.detector.score_outputs,
+        ...manifest.detector.box_outputs,
+        ...manifest.detector.landmark_outputs,
+      ])
+        if (!detector.outputNames.includes(name)) throw new Error('SCRFD output name missing');
+      if (
+        !recognizer.outputNames.includes(manifest.recognizer.output) ||
+        !pad.outputNames.includes(manifest.pad.output)
+      )
+        throw new Error('Model output name missing');
+      const result = new OnnxFaceEngine(manifest, detector, recognizer, pad);
+      // Validate tensor contracts during startup, before advertising readiness.
+      await result.detect(Buffer.alloc(640 * 640 * 3), 640, 640);
+      const recognition = await result.run(
+        recognizer,
+        Buffer.alloc(112 * 112 * 3),
+        112,
+        112,
+        manifest.recognizer.mean,
+        manifest.recognizer.divisor,
+        manifest.recognizer.color,
       );
+      if (recognition[manifest.recognizer.output]?.data.length !== 512)
+        throw new Error('ArcFace output must contain 512 numbers');
+      const padOutput = await result.run(
+        pad,
+        Buffer.alloc(manifest.pad.width * manifest.pad.height * 3),
+        manifest.pad.width,
+        manifest.pad.height,
+        manifest.pad.mean,
+        manifest.pad.divisor,
+        manifest.pad.color,
+      );
+      if ((padOutput[manifest.pad.output]?.data.length ?? 0) <= manifest.pad.live_class)
+        throw new Error('PAD live class not found');
+      return result;
+    } catch (error) {
+      await Promise.allSettled(sessions.map((session) => session.release()));
+      throw error;
     }
-    const [detector, recognizer, pad] = sessions as [
-      ort.InferenceSession,
-      ort.InferenceSession,
-      ort.InferenceSession,
-    ];
-    if ([detector, recognizer, pad].some((s) => s.inputNames.length !== 1))
-      throw new Error('Each model must expose one NCHW image input');
-    for (const name of [
-      ...manifest.detector.score_outputs,
-      ...manifest.detector.box_outputs,
-      ...manifest.detector.landmark_outputs,
-    ])
-      if (!detector.outputNames.includes(name)) throw new Error('SCRFD output name missing');
-    if (
-      !recognizer.outputNames.includes(manifest.recognizer.output) ||
-      !pad.outputNames.includes(manifest.pad.output)
-    )
-      throw new Error('Model output name missing');
-    const result = new OnnxFaceEngine(manifest, detector, recognizer, pad);
-    // Validate tensor contracts during startup, before advertising readiness.
-    await result.run(
-      detector,
-      Buffer.alloc(640 * 640 * 3),
-      640,
-      640,
-      [127.5, 127.5, 127.5],
-      [128, 128, 128],
-      'RGB',
-    );
-    const recognition = await result.run(
-      recognizer,
-      Buffer.alloc(112 * 112 * 3),
-      112,
-      112,
-      manifest.recognizer.mean,
-      manifest.recognizer.divisor,
-      manifest.recognizer.color,
-    );
-    if (recognition[manifest.recognizer.output]?.data.length !== 512)
-      throw new Error('ArcFace output must contain 512 numbers');
-    await result.run(
-      pad,
-      Buffer.alloc(manifest.pad.width * manifest.pad.height * 3),
-      manifest.pad.width,
-      manifest.pad.height,
-      manifest.pad.mean,
-      manifest.pad.divisor,
-      manifest.pad.color,
-    );
-    return result;
   }
   private async run(
     session: ort.InferenceSession,

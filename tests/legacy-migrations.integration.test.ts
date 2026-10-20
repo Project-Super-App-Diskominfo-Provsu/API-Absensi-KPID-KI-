@@ -42,12 +42,16 @@ describe.skipIf(!process.env.TEST_LEGACY_DATABASE_URL)('legacy PostGIS upgrade',
   });
 
   it('backfills coordinates and preserves original checksums, seed IDs and application data', async () => {
-    expect(await migrateDatabase(pool)).toEqual(['003_office_coordinates.sql']);
+    expect(await migrateDatabase(pool)).toEqual([
+      '003_office_coordinates.sql',
+      '004_active_sessions_index.sql',
+    ]);
     expect(
       (
-        await pool.query('SELECT * FROM schema_migrations WHERE name <> $1 ORDER BY name', [
-          '003_office_coordinates.sql',
-        ])
+        await pool.query(
+          'SELECT * FROM schema_migrations WHERE name <> ALL($1::text[]) ORDER BY name',
+          [['003_office_coordinates.sql', '004_active_sessions_index.sql']],
+        )
       ).rows,
     ).toEqual(ledger);
     expect(

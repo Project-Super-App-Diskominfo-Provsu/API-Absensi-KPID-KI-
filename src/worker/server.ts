@@ -3,7 +3,8 @@ import helmet from 'helmet';
 import { timingSafeEqual } from 'node:crypto';
 import { pino } from 'pino';
 import { z } from 'zod';
-import { upload, validateImage } from '../shared/files/image-upload.js';
+import { upload, validateImage, createImageHandler } from '../shared/files/image-upload.js';
+import { ApiError } from '../shared/errors/api-error.js';
 import { hash } from '../shared/security/crypto.js';
 import { OnnxFaceEngine, ModelInputError } from './engine.js';
 const logger = pino();
@@ -41,30 +42,33 @@ app.use((req, res, next) => {
   next();
 });
 app.get('/ready', (_req, res) => res.status(engine ? 200 : 503).json({ ready: Boolean(engine) }));
-let busy = false;
-app.post('/v1/observe', upload.single('image'), async (req, res) => {
-  if (!engine) {
-    res.status(503).json({ error: 'MODELS_NOT_CONFIGURED' });
-    return;
-  }
-  if (busy) {
-    res.status(503).json({ error: 'WORKER_BUSY' });
-    return;
-  }
-  busy = true;
-  try {
+const imageHandler = createImageHandler(1);
+app.post(
+  '/v1/observe',
+  imageHandler(upload.single('image'), async (req, res) => {
+    if (!engine) {
+      res.status(503).json({ error: 'MODELS_NOT_CONFIGURED' });
+      return;
+    }
+
     const { nonce } = z
       .object({ nonce: z.string().min(40).max(100) })
       .strict()
       .parse(req.body);
     const image = await validateImage(req.file);
     res.json(await engine.observe(image, nonce));
-  } finally {
-    busy = false;
-  }
-});
+  }),
+);
 app.use(
   (error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    if (res.headersSent || res.destroyed) {
+      _next(error);
+      return;
+    }
+    if (error instanceof ApiError && error.code === 'FACE_BUSY') {
+      res.status(503).json({ error: 'WORKER_BUSY' });
+      return;
+    }
     const inputError =
       error instanceof ModelInputError ||
       error instanceof z.ZodError ||

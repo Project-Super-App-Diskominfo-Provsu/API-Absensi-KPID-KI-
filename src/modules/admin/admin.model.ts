@@ -88,13 +88,6 @@ export async function updateUserFields(db: Db, id: string, fields: Record<string
   ]);
 }
 
-export async function revokeUserSessions(db: Db, userId: string) {
-  return db.query(
-    'UPDATE refresh_sessions SET revoked_at=COALESCE(revoked_at,now()) WHERE user_id=$1',
-    [userId],
-  );
-}
-
 export async function findAllUnits(db: Db) {
   return db.query<Unit>('SELECT * FROM units ORDER BY name');
 }

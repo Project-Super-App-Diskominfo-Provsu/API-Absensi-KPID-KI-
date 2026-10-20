@@ -52,7 +52,7 @@ export async function findPermittedOffices(
     `SELECT ${officeFields}
      FROM offices o JOIN category_office_permissions p ON p.office_id=o.id
      WHERE p.employee_category_code=$1 AND o.active AND ($2::uuid IS NULL OR o.id=$2)
-     ORDER BY o.code`,
+     ORDER BY o.code FOR SHARE OF o`,
     [categoryCode, officeId],
   );
 }

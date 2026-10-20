@@ -22,6 +22,7 @@ import type { SsoProvider } from './modules/sso/sso.service.js';
 import { ApiError } from './shared/errors/api-error.js';
 import { errorHandler } from './middleware/error-handler.js';
 import { hash } from './shared/security/crypto.js';
+import { createImageHandler } from './shared/files/image-upload.js';
 import { openapi } from './docs/openapi.js';
 
 export function createApp(
@@ -171,13 +172,14 @@ export function createApp(
   );
   app.use('/api/v1', ssoRoutes(pool, config, limiter('absensi:sso:', 30), ssoProvider));
   app.use('/api/v1', authMiddleware(pool, config));
+  const imageHandler = createImageHandler(4);
   app.use(
     '/api/v1',
     officeRoutes(pool),
     adminRoutes(pool),
     deviceRoutes(pool),
-    faceRoutes(pool, config, engine),
-    attendanceRoutes(pool, redis, config, engine),
+    faceRoutes(pool, config, engine, imageHandler),
+    attendanceRoutes(pool, redis, config, engine, imageHandler),
   );
   app.use((_req, res) =>
     res.status(404).json({

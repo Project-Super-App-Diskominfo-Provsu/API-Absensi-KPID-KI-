@@ -3,14 +3,13 @@ import type { Pool } from 'pg';
 import { audit } from '../../database/audit.js';
 import { transaction, type Db } from '../../database/client.js';
 import { fail } from '../../shared/errors/api-error.js';
-import type { User } from '../auth/auth.model.js';
+import { revokeAllUserSessions, type User } from '../auth/auth.model.js';
 import {
   findUserForUpdate,
   findUserFaceTemplates,
   findUsersPaginated,
   insertUser,
   updateUserFields,
-  revokeUserSessions,
   findAllUnits,
   insertUnit,
   findAuditLogs,
@@ -119,7 +118,7 @@ export async function updateUser(
     const updated = await updateUserFields(db, id, input);
 
     if (input.active === false || input.role !== undefined) {
-      await revokeUserSessions(db, id);
+      await revokeAllUserSessions(db, id);
     }
 
     await audit(db, actor.id, 'USER_UPDATED', id, { before: old, after: updated.rows[0]! });

@@ -87,10 +87,10 @@ export async function enrollFace(
     }
   }
 
+  const normalized = observations.map((value) => normalize(value.embedding));
   const mean = normalize(
     first.embedding.map(
-      (_, i) =>
-        observations.reduce((n, v) => n + normalize(v.embedding)[i]!, 0) / observations.length,
+      (_, i) => normalized.reduce((n, vector) => n + vector[i]!, 0) / normalized.length,
     ),
   );
 

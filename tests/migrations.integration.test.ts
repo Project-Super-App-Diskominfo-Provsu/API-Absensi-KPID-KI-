@@ -116,8 +116,16 @@ describe('database migrations', () => {
       '001_initial_postgres.sql',
       '002_sso.sql',
       '003_office_coordinates.sql',
+      '004_active_sessions_index.sql',
     ]);
-    expect((await pool.query('SELECT name,checksum FROM schema_migrations')).rowCount).toBe(3);
+    expect((await pool.query('SELECT name,checksum FROM schema_migrations')).rowCount).toBe(4);
+    expect(
+      (
+        await pool.query(
+          "SELECT indexdef FROM pg_indexes WHERE indexname='refresh_user_active_idx'",
+        )
+      ).rows[0].indexdef,
+    ).toContain('WHERE (revoked_at IS NULL)');
     await expect(
       pool.query(
         'SELECT u.auth_mode,s.expires_at FROM users u LEFT JOIN refresh_sessions s ON false LIMIT 0',
@@ -142,8 +150,8 @@ describe('database migrations', () => {
 
   it('serializes simultaneous migrations from multiple replicas', async () => {
     const results = await Promise.all([migrateDatabase(pool), migrateDatabase(pool)]);
-    expect(results.map((names) => names.length).sort()).toEqual([0, 3]);
-    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(3);
+    expect(results.map((names) => names.length).sort()).toEqual([0, 4]);
+    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(4);
     expect((await pool.query('SELECT * FROM offices')).rowCount).toBe(3);
   });
 
@@ -157,7 +165,7 @@ describe('database migrations', () => {
       'Applied migration changed: 001_initial_postgres.sql',
     );
     expect((await pool.query("SELECT * FROM units WHERE name='Preserved unit'")).rowCount).toBe(1);
-    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(3);
+    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(4);
   });
 
   it('rolls back all pending schema changes and the ledger if any SQL fails', async () => {

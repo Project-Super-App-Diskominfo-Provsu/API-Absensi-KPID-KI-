@@ -4,7 +4,11 @@ import { MulterError } from 'multer';
 import type { Logger } from 'pino';
 import { ApiError } from '../shared/errors/api-error.js';
 export function errorHandler(logger: Logger): ErrorRequestHandler {
-  return (err, _req, res, _next) => {
+  return (err, _req, res, next) => {
+    if (res.headersSent || res.destroyed) {
+      next(err);
+      return;
+    }
     let error = err instanceof ApiError ? err : undefined;
     if (err instanceof ZodError)
       error = new ApiError(400, 'VALIDATION_ERROR', 'Data permintaan tidak valid.');

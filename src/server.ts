@@ -11,6 +11,11 @@ if (!config.BIOMETRIC_KEY_BASE64) {
     'Biometric encryption key is not configured; enrollment and biometric attendance are disabled.',
   );
 }
+if (config.NODE_ENV === 'production' && !config.TRUST_PROXY) {
+  logger.warn(
+    'TRUST_PROXY is empty. HTTPS terminated at Dokploy/Traefik will be rejected until its actual proxy IP/CIDR is configured.',
+  );
+}
 const pool = createPool(config.DATABASE_URL, config.DB_POOL_MAX);
 pool.on('error', () => logger.error('PostgreSQL connection error'));
 try {
