@@ -3,6 +3,7 @@ import { pino } from 'pino';
 import { readConfig } from './config/env.js';
 import { createPool } from './database/client.js';
 import { migrateDatabase } from './database/migrate.js';
+import { PostgisUnavailableError } from './database/postgis.js';
 import { createApp } from './app.js';
 const logger = pino();
 const config = readConfig();
@@ -22,10 +23,16 @@ try {
   }
 } catch (error) {
   logger.fatal(
-    { code: (error as { code?: string })?.code, error_type: error?.constructor?.name },
-    config.DB_MIGRATE_ON_START === 'true'
-      ? 'Database migration failed. Check migration checksums, PostgreSQL/PostGIS availability and database role permissions. Changes in the failed migration transaction were rolled back.'
-      : 'Database schema is unavailable. Run db:migrate:production or enable DB_MIGRATE_ON_START=true.',
+    {
+      code: (error as { code?: string })?.code,
+      error_type: error?.constructor?.name,
+      ...(error instanceof PostgisUnavailableError && { migration: error.migration }),
+    },
+    error instanceof PostgisUnavailableError
+      ? error.message
+      : config.DB_MIGRATE_ON_START === 'true'
+        ? 'Database migration failed. Check migration checksums, PostgreSQL/PostGIS availability and database role permissions. Changes in the failed migration transaction were rolled back.'
+        : 'Database schema is unavailable. Run db:migrate:production or enable DB_MIGRATE_ON_START=true.',
   );
   await pool.end();
   process.exit(1);

@@ -72,6 +72,20 @@ Database yang sudah berisi tabel aplikasi tetapi tidak memiliki ledger tidak dia
 
 Jika mode otomatis dimatikan dan skema belum tersedia, startup mencatat instruksi untuk menjalankan `db:migrate:production` atau mengaktifkan flag tersebut. Pada Dokploy Application Dockerfile, default flag berasal dari image, sehingga tidak perlu bergantung pada Compose untuk menjalankan inisialisasi database.
 
+## Image PostgreSQL dengan PostGIS
+
+`Dockerfile.postgres` menyediakan image database berbasis PostgreSQL Debian dengan paket PostGIS yang dibutuhkan migrasi. Default mengikuti prasyarat project, PostgreSQL 17. Image ini dipakai oleh service database; service API tetap memakai `Dockerfile` utama. Compose aplikasi tetap memakai database eksternal.
+
+```sh
+docker build -f Dockerfile.postgres --build-arg POSTGRES_MAJOR=17 -t absensi-postgres:17-postgis .
+```
+
+Sebelum memakai volume existing, cocokkan `POSTGRES_MAJOR` dengan major version PostgreSQL yang membuat data tersebut. Jangan menaikkan major version untuk memperbaiki extension yang hilang. Pertahankan konfigurasi database, kredensial, jaringan, dan volume yang sudah dipakai. Mengganti base distribusi juga perlu ditinjau terhadap locale/collation dan backup database. Build image tidak mengubah database produksi secara otomatis; gunakan image hasil build pada service PostgreSQL melalui alur deployment database.
+
+Image hanya menyediakan paket extension. Migrator API menjalankan `CREATE EXTENSION IF NOT EXISTS postgis` pada database aplikasi menggunakan role migrasi yang berizin. Sebelum menjalankan SQL tersebut, migrator memeriksa `pg_available_extensions`. Jika PostGIS tidak tersedia, startup berhenti dengan kode `POSTGIS_NOT_AVAILABLE`, nama migration, dan instruksi image database. Tidak ada tabel aplikasi yang di-commit dalam transaksi yang gagal. Kode SQLSTATE `0A000` sendiri tidak membuktikan semua error berasal dari PostGIS; error query prasyarat lainnya tetap diteruskan.
+
+Instalasi PostGIS pada image API tidak menyediakan extension untuk server PostgreSQL yang terpisah. Setelah image database yang sesuai dipakai dan PostgreSQL siap, retry startup API untuk menjalankan migrasi tertunda.
+
 ## Worker wajah opsional
 
 Untuk staging login saja, profil ini tidak perlu diaktifkan. API tetap menolak operasi wajah ketika worker belum tersedia. Untuk mengaktifkan biometrik:
@@ -90,6 +104,6 @@ Container menggunakan filesystem read-only, direktori sementara di memori, selur
 
 ## Pengujian dan layanan yang sudah berjalan
 
-CI memakai database dan Redis sementara khusus tes integrasi. Service CI tersebut bukan bagian dari deployment aplikasi. Tes lokal memerlukan `TEST_DATABASE_URL` dan `TEST_REDIS_URL` ke layanan uji tersendiri jika berbeda dari default tes; akun PostgreSQL uji membutuhkan hak membuat database. Jangan gunakan akun produksi.
+CI memakai PostgreSQL/PostGIS, PostgreSQL biasa, dan Redis sementara khusus tes integrasi. Service CI tersebut bukan bagian dari deployment aplikasi. Tes lokal memerlukan `TEST_DATABASE_URL` dan `TEST_REDIS_URL` ke layanan uji tersendiri jika berbeda dari default tes; akun PostgreSQL uji membutuhkan hak membuat database. Isi `TEST_PLAIN_DATABASE_URL` ke PostgreSQL tanpa PostGIS untuk menjalankan regresi SQLSTATE `0A000` dan penolakan prasyarat; CI selalu menjalankan skenario tersebut. Jangan gunakan akun produksi.
 
 Perubahan Compose tidak menghentikan container database/Redis lama dan tidak menghapus volume lama. Jika layanan lama masih dipakai untuk data lokal, tentukan pemindahan dan backup secara terpisah. Jangan menjalankan `docker compose down --remove-orphans` atau menghapus volume tanpa memastikan data sudah aman.

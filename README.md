@@ -23,7 +23,7 @@ Semua radius tepat 50 meter. Masuk dan pulang boleh pada kantor berbeda yang dii
 
 ## Menjalankan lokal
 
-Prasyarat: Node.js 24, npm, PostgreSQL 17 dengan PostGIS, serta Redis eksternal. Docker Compose diperlukan jika API dijalankan dalam container.
+Prasyarat: Node.js 24, npm, PostgreSQL 17 dengan PostGIS, serta Redis eksternal. `Dockerfile.postgres` tersedia untuk membangun image database dengan paket PostGIS; gunakan major version yang sesuai jika database sudah berisi data. Docker Compose diperlukan jika API dijalankan dalam container.
 
 ```powershell
 npm ci

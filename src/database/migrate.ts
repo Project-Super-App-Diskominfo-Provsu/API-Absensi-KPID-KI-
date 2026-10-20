@@ -2,6 +2,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import type { Pool } from 'pg';
 import { transaction } from './client.js';
+import { requirePostgis } from './postgis.js';
 
 export async function migrateDatabase(
   pool: Pool,
@@ -27,6 +28,9 @@ export async function migrateDatabase(
         if (old.rows[0].checksum !== checksum)
           throw new Error(`Applied migration changed: ${name}`);
         continue;
+      }
+      if (/\bCREATE\s+EXTENSION\s+(?:IF\s+NOT\s+EXISTS\s+)?postgis\b/i.test(sql)) {
+        await requirePostgis(db, name);
       }
       await db.query(sql);
       await db.query('INSERT INTO schema_migrations(name,checksum) VALUES ($1,$2)', [
