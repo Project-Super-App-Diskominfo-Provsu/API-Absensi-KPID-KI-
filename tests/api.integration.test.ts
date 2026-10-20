@@ -1,6 +1,6 @@
 import { beforeAll, afterAll, beforeEach, describe, it, expect } from 'vitest';
 import { randomUUID, generateKeyPairSync, sign } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { migrateDatabase } from '../src/database/migrate.js';
 import { Pool } from 'pg';
 import { createRedisClient } from '../src/database/redis.js';
 import request from 'supertest';
@@ -106,11 +106,8 @@ async function capture(
 }
 beforeAll(async () => {
   await adminPool.query(`CREATE DATABASE ${databaseName}`);
-  await pool.query(
-    await readFile(new URL('../migrations/001_initial.sql', import.meta.url), 'utf8'),
-  );
+  await migrateDatabase(pool);
   await redis.connect();
-  await pool.query(await readFile(new URL('../migrations/002_sso.sql', import.meta.url), 'utf8'));
   app = createApp(pool, redis, config, engine);
   passwordHash = await argon2.hash('test-password-123');
   image = await sharp({ create: { width: 128, height: 128, channels: 3, background: '#c0a080' } })
@@ -134,7 +131,7 @@ beforeEach(async () => {
   workerHook = undefined;
   // Only the randomly created test database is reset. Existing databases and Redis keys are preserved.
   await pool.query('TRUNCATE users CASCADE');
-  await pool.query(`UPDATE offices SET location=ST_SetSRID(ST_MakePoint(CASE code WHEN 'DISKOMINFO_PROVSU' THEN 98.6 WHEN 'KPID_SUMUT' THEN 98.61 ELSE 98.62 END,3.5),4326)::geography,
+  await pool.query(`UPDATE offices SET latitude=3.5,longitude=CASE code WHEN 'DISKOMINFO_PROVSU' THEN 98.6 WHEN 'KPID_SUMUT' THEN 98.61 ELSE 98.62 END,
     max_gps_accuracy_m=15,max_location_age_s=30,active=true`);
   offices = Object.fromEntries(
     (await pool.query('SELECT id,code FROM offices')).rows.map((o) => [o.code, o.id]),
@@ -186,6 +183,7 @@ describe('live database location rules', () => {
     it(`${category} at ${code}: ${allowed ? 'allow' : 'deny'}`, async () => {
       const result = selectOffice(
         pool,
+        redis,
         category,
         {
           latitude: 3.5,
@@ -199,19 +197,28 @@ describe('live database location rules', () => {
       if (allowed) expect((await result).code).toBe(code);
       else await expect(result).rejects.toMatchObject({ code: 'OFFICE_NOT_ALLOWED' });
     });
-  it('enforces the radius in PostGIS with points just inside and outside 50m', async () => {
+  it('enforces Redis GEO radius with points just inside and outside 50m', async () => {
+    const key = `absensi:test:geo:${randomUUID()}`;
+    let center: { latitude: string; longitude: string };
+    try {
+      await redis.geoAdd(key, { longitude: 98.6, latitude: 3.5, member: 'office' });
+      center = (await redis.geoPos(key, 'office'))[0]!;
+    } finally {
+      await redis.del(key);
+    }
     for (const [distance, allowed] of [
       [49.99, true],
       [50.01, false],
     ] as const) {
-      const point = (
-        await pool.query(
-          'SELECT ST_Y(p::geometry) AS lat,ST_X(p::geometry) AS lng FROM (SELECT ST_Project(location,$2::float8,0::float8) p FROM offices WHERE id=$1) q',
-          [offices.DISKOMINFO_PROVSU, distance],
-        )
-      ).rows[0];
+      // Redis uses this documented spherical Earth radius. Project north from
+      // the encoded office position so the 50m cutoff is tested independently of quantization.
+      const point = {
+        lat: Number(center.latitude) + ((distance / 6372797.560856) * 180) / Math.PI,
+        lng: Number(center.longitude),
+      };
       const result = selectOffice(
         pool,
+        redis,
         'KPID',
         {
           latitude: point.lat,
@@ -235,21 +242,22 @@ describe('live database location rules', () => {
       office_id: offices.DISKOMINFO_PROVSU,
     };
     await expect(
-      selectOffice(pool, 'KPID', { ...base, accuracy_m: 20 }, new Date()),
+      selectOffice(pool, redis, 'KPID', { ...base, accuracy_m: 20 }, new Date()),
     ).rejects.toMatchObject({ code: 'GPS_ACCURACY_LOW' });
     await expect(
       selectOffice(
         pool,
+        redis,
         'KPID',
         { ...base, captured_at: new Date(Date.now() - 60000).toISOString() },
         new Date(),
       ),
     ).rejects.toMatchObject({ code: 'LOCATION_STALE' });
-    await expect(selectOffice(pool, null, base, new Date())).rejects.toMatchObject({
+    await expect(selectOffice(pool, redis, null, base, new Date())).rejects.toMatchObject({
       code: 'EMPLOYEE_CATEGORY_INVALID',
     });
     await pool.query('UPDATE offices SET active=false WHERE id=$1', [offices.DISKOMINFO_PROVSU]);
-    await expect(selectOffice(pool, 'KPID', base, new Date())).rejects.toMatchObject({
+    await expect(selectOffice(pool, redis, 'KPID', base, new Date())).rejects.toMatchObject({
       code: 'OFFICE_UNAVAILABLE',
     });
   });
@@ -441,7 +449,7 @@ describe('API security and attendance', () => {
     expect((await req.attach('image', image, 'photo.png')).status).toBe(400);
   });
   it('prevents an office from becoming active without coordinates', async () => {
-    await pool.query('UPDATE offices SET active=false,location=NULL WHERE id=$1', [
+    await pool.query('UPDATE offices SET active=false,latitude=NULL,longitude=NULL WHERE id=$1', [
       offices.KI_SUMUT,
     ]);
     const result = await request(app)

@@ -66,7 +66,7 @@ Express mengatur HTTP dan tidak menyediakan migrasi bawaan. Proyek ini memakai m
 | `make:migration` | Buat file SQL baru secara manual |
 | `migrate:rollback` / `migrate:fresh` | Tidak tersedia |
 
-Saat ini terdapat `001_initial.sql` dan `002_sso.sql`. Jalankan dari root proyek:
+Database baru memakai `001_initial_postgres.sql`, lalu `002_sso.sql` dan `003_office_coordinates.sql`. Database legacy tetap memakai baseline `001_initial.sql` tanpa perubahan checksum. Migrator memilih satu baseline otomatis dari ledger. Jalankan dari root proyek:
 
 ```powershell
 npm run db:migrate
@@ -74,10 +74,10 @@ npm run db:migrate
 
 Perintah membaca `DATABASE_URL` dari environment/`.env`. Pastikan target koneksinya benar sebelum menjalankan. Migrator mengurutkan nama file SQL, memeriksa ledger dan checksum, lalu menjalankan file yang belum diterapkan. Advisory lock mencegah dua migrator berjalan bersamaan. Semua migrasi yang tertunda dan catatan ledger berada dalam satu transaksi: jika salah satu gagal, perubahan transaksi tersebut dibatalkan. Gunakan SQL yang dapat dijalankan dalam transaksi; operasi seperti `CREATE INDEX CONCURRENTLY` memerlukan prosedur deployment terpisah.
 
-Untuk perubahan berikutnya, buat misalnya `migrations/003_add_employee_phone.sql`:
+Untuk perubahan berikutnya, buat misalnya `migrations/004_add_employee_phone.sql`:
 
 ```sql
 ALTER TABLE users ADD COLUMN phone_number text;
 ```
 
-Jalankan kembali `npm run db:migrate`. File lama dilewati; perubahan pada file yang sudah diterapkan ditolak karena checksum berbeda. Jangan mengedit migration yang sudah digunakan lingkungan lain. Untuk membatalkan perubahan, buat migration koreksi baru setelah menilai kehilangan data dan kompatibilitas aplikasi. Backup tetap diperlukan sebelum perubahan yang menghapus atau mengubah data. Hardening login saat ini tidak mengubah skema, sehingga tidak membutuhkan file migration tambahan.
+Jalankan kembali `npm run db:migrate`. File lama dilewati; perubahan pada file yang sudah diterapkan ditolak karena checksum berbeda. Jangan mengedit migration yang sudah digunakan lingkungan lain. Untuk membatalkan perubahan, buat migration koreksi baru setelah menilai kehilangan data dan kompatibilitas aplikasi. Backup tetap diperlukan sebelum perubahan yang menghapus atau mengubah data. Migrasi koordinat kantor adalah penambahan kompatibel; jangan menghapus kolom legacy atau extension sebagai bagian rollout ini.

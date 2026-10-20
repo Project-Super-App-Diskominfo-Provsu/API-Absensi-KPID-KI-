@@ -1,6 +1,6 @@
 # API Sistem Absensi KPID/KI Sumatera Utara
 
-Backend Express 5 dan TypeScript untuk aplikasi Android React Native. PostgreSQL/PostGIS menyimpan data dan menghitung radius; Redis menyimpan rate limit; worker ONNX menjalankan deteksi, alignment, embedding wajah 1:1, dan passive presentation attack detection (PAD).
+Backend Express 5 dan TypeScript untuk aplikasi Android React Native. PostgreSQL standar menyimpan data dan koordinat kantor; Redis GEO menghitung radius serta menyimpan rate limit; worker ONNX menjalankan deteksi, alignment, embedding wajah 1:1, dan passive presentation attack detection (PAD).
 
 Struktur modul, tanggung jawab setiap lapisan, dan aturan dependency dijelaskan pada [panduan arsitektur](docs/architecture.md). Modul menggunakan pemisahan route, controller, schema, service, dan model akses data. Infrastruktur, validasi bersama, dan worker dipisahkan dari handler HTTP bisnis.
 
@@ -19,11 +19,11 @@ Belum tersedia: persetujuan koreksi/manual, penyelesaian administratif status `N
 | KPID | DISKOMINFO_PROVSU, KPID_SUMUT |
 | KI | DISKOMINFO_PROVSU, KI_SUMUT |
 
-Semua radius tepat 50 meter. Masuk dan pulang boleh pada kantor berbeda yang diizinkan. Backend membaca kategori pengguna terkini dari database; role admin tidak memperluas izin lokasi absensi. Kantor nonaktif tidak dapat digunakan. Akurasi dan usia lokasi diatur terpisah per kantor setelah uji lapangan, tanpa memperbesar radius.
+Semua radius tetap 50 meter menurut Redis GEO. Pengukuran memakai model bumi bola dan koordinat kantor terkuantisasi; hasil dekat batas dapat berbeda dari PostGIS/geodesi ellipsoid. Tidak ada penambahan toleransi radius. Latitude yang didukung Redis GEO adalah -85.05112878 sampai 85.05112878 derajat. Masuk dan pulang boleh pada kantor berbeda yang diizinkan. Backend membaca kategori pengguna terkini dari database; role admin tidak memperluas izin lokasi absensi. Kantor nonaktif tidak dapat digunakan. Akurasi dan usia lokasi diatur terpisah per kantor setelah uji lapangan, tanpa memperbesar radius.
 
 ## Menjalankan lokal
 
-Prasyarat: Node.js 24, npm, PostgreSQL 17 dengan PostGIS, serta Redis eksternal. `Dockerfile.postgres` tersedia untuk membangun image database dengan paket PostGIS; gunakan major version yang sesuai jika database sudah berisi data. Docker Compose diperlukan jika API dijalankan dalam container.
+Prasyarat: Node.js 24, npm, PostgreSQL 17 standar (termasuk Create Database bawaan Dokploy), serta Redis 7 atau lebih baru. Database baru tidak memerlukan PostGIS. Docker Compose diperlukan jika API dijalankan dalam container.
 
 ```powershell
 npm ci
@@ -52,7 +52,7 @@ npm run dev
 
 API berada di `http://localhost:3000`. Worker dijalankan di terminal terpisah dengan `npm run worker:dev`. `GET /health` hanya menandakan proses hidup. `GET /ready` mengembalikan 503 jika database, Redis, konfigurasi biometrik, atau worker belum siap. Endpoint autentikasi dan administrasi tetap dapat digunakan untuk menyiapkan sistem.
 
-Compose menjalankan API dan menyediakan worker wajah opsional; tidak ada service atau volume database/Redis di deployment aplikasi. Database wajib mendukung PostGIS. Environment container harus menunjuk alamat layanan eksternal, bukan localhost container. Untuk layanan pada host Docker, gunakan `host.docker.internal`; untuk layanan remote, gunakan hostname remote. Image menyertakan migrator dan SQL; secara default startup Docker menerapkan migrasi tertunda sebelum membuka HTTP server. Role database harus memiliki izin migrasi dan menyiapkan PostGIS. Untuk memisahkan role migrasi dari role runtime, jalankan `npm run db:migrate:production` memakai role migrasi, lalu set `DB_MIGRATE_ON_START=false` pada API. Startup dari source tetap memakai migrasi manual secara default. Lihat [panduan Docker dan runbook produksi Dokploy](docs/docker.md#runbook-produksi-dokploy).
+Compose menjalankan API dan menyediakan worker wajah opsional; tidak ada service atau volume database/Redis di deployment aplikasi. PostgreSQL bawaan Dokploy dapat dipakai langsung. Environment container harus menunjuk alamat layanan eksternal, bukan localhost container. Untuk layanan pada host Docker, gunakan `host.docker.internal`; untuk layanan remote, gunakan hostname remote. Image menyertakan migrator dan SQL; secara default startup Docker menerapkan migrasi tertunda sebelum membuka HTTP server. Role migrasi database harus memiliki izin membuat/mengubah skema; extension tambahan tidak dibutuhkan pada database baru. Untuk memisahkan role migrasi dari role runtime, jalankan `npm run db:migrate:production` memakai role migrasi, lalu set `DB_MIGRATE_ON_START=false` pada API. Startup dari source tetap memakai migrasi manual secara default. Lihat [panduan Docker dan runbook produksi Dokploy](docs/docker.md#runbook-produksi-dokploy).
 
 Panduan [login internal, staging, dan migrasi untuk pengguna Laravel](docs/internal-auth.md) menjelaskan konfigurasi HTTPS/proxy, masa berlaku token, endpoint password/logout, dan cara menambahkan migrasi. SSO tetap dinonaktifkan sampai konfigurasi Google tersedia. Gunakan `GET /ready/auth` untuk kesiapan database dan Redis pada staging khusus login; `/ready` tetap memeriksa worker wajah juga.
 
@@ -151,6 +151,12 @@ Konfigurasikan `FACE_MODEL_VERSION` sama dengan manifest dan empat threshold API
 Worker terproteksi shared token dan harus ditempatkan pada jaringan privat/TLS saat dihosting. Endpoint internal `POST /v1/observe` menerima multipart `image` dan `nonce`, mengembalikan embedding, model version, skor kualitas/PAD, nonce, dan hash gambar. API memvalidasi identitas request dan memutuskan similarity sendiri. API membatasi panggilan bersamaan, worker memproses satu inferensi setiap saat, dan kelebihan beban menghasilkan 503 tanpa menerima absensi.
 
 Passive PAD, signature perangkat, dan flag mock bukan jaminan kamera/lokasi asli. Uji foto cetak, layar, video, injeksi media, kondisi cahaya, perangkat target, serta kesalahan GPS diperlukan sebelum digunakan operasional. Nonce mengikat operasi jaringan; nonce tidak membuktikan umur isi foto secara mandiri.
+
+## Penyimpanan koordinat dan Redis GEO
+
+PostgreSQL menjadi sumber kebenaran koordinat, status aktif, izin kategori dan kebijakan GPS kantor. Pada setiap verifikasi awal dan akhir absensi, API membaca data kantor terbaru, lalu satu skrip Redis menjalankan `GEOADD` koordinat kantor pada key unik, `GEOSEARCH FROMLONLAT` dengan radius 50 meter dan `WITHDIST`, lalu menghapus key. Lokasi pegawai tidak ditambahkan sebagai member Redis. Key memiliki TTL pengaman 10 detik; tidak ada sinkronisasi cache berkala atau state lokasi bersama antar-request. Redis ACL harus mengizinkan `EVAL`, `GEOADD`, `GEOSEARCH`, `EXPIRE`, dan `DEL`, selain command rate limiter. Kegagalan pengukuran menghasilkan 503 `GEOFENCE_UNAVAILABLE`, tanpa menerima absensi.
+
+Database baru memakai baseline `001_initial_postgres.sql`, diikuti `002_sso.sql` dan `003_office_coordinates.sql`. Migrator memilih baseline otomatis dari ledger. Database legacy yang sudah menerapkan `001_initial.sql` mempertahankan checksum asli; migrasi 003 menyalin koordinat ke kolom angka dan memasang trigger dua arah agar kode lama/baru dapat menulis saat rollout. Kolom geography dan extension lama tidak dihapus. Database dengan migrasi awal yang gagal karena PostGIS dapat langsung mencoba image baru tanpa reset atau edit ledger. Lihat batas rollback pada [panduan Docker](docs/docker.md#postgresql-default-dokploy-dan-upgrade-legacy).
 
 ## Pengujian
 

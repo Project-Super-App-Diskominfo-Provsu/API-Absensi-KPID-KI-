@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -37,6 +37,53 @@ afterAll(async () => {
 });
 
 describe('database migrations', () => {
+  it('recovers a failed historical PostGIS bootstrap on plain PostgreSQL without losing data', async () => {
+    expect((await pool.query("SELECT 1 FROM pg_extension WHERE extname='postgis'")).rowCount).toBe(
+      0,
+    );
+    await pool.query('CREATE TABLE preserved_before_deploy(value text)');
+    await pool.query("INSERT INTO preserved_before_deploy VALUES ('preserved')");
+    fixtureDirectory = await mkdtemp(join(tmpdir(), 'absensi-failed-bootstrap-'));
+    await copyFile(
+      new URL('../migrations/001_initial.sql', import.meta.url),
+      join(fixtureDirectory, '001_initial.sql'),
+    );
+    await expect(
+      migrateDatabase(pool, pathToFileURL(fixtureDirectory + '/')),
+    ).rejects.toMatchObject({ code: '0A000' });
+    expect(
+      (await pool.query("SELECT to_regclass('schema_migrations') AS ledger")).rows[0].ledger,
+    ).toBeNull();
+    await migrateDatabase(pool);
+    expect((await pool.query('SELECT * FROM preserved_before_deploy')).rows).toEqual([
+      { value: 'preserved' },
+    ]);
+    expect((await pool.query("SELECT 1 FROM pg_extension WHERE extname='postgis'")).rowCount).toBe(
+      0,
+    );
+  });
+
+  it('rejects conflicting baseline histories rather than guessing which data to adopt', async () => {
+    await migrateDatabase(pool);
+    await pool.query(
+      "INSERT INTO schema_migrations(name,checksum) VALUES ('001_initial.sql','conflicting')",
+    );
+    await expect(migrateDatabase(pool)).rejects.toThrow('Conflicting migration baselines');
+    await expect(verifyDatabaseSchema(pool)).rejects.toThrow('Conflicting migration baselines');
+  });
+
+  it('enforces coordinate pairs, bounds and active-office configuration in PostgreSQL', async () => {
+    await migrateDatabase(pool);
+    for (const sql of [
+      'UPDATE offices SET latitude=3.5',
+      'UPDATE offices SET latitude=91,longitude=98.6',
+      'UPDATE offices SET latitude=3.5,longitude=181',
+      'UPDATE offices SET latitude=0,longitude=0',
+      'UPDATE offices SET active=true',
+    ])
+      await expect(pool.query(sql)).rejects.toMatchObject({ code: '23514' });
+  });
+
   it('checks every required checksum while tolerating additive migrations from newer replicas', async () => {
     await expect(verifyDatabaseSchema(pool)).rejects.toMatchObject({ code: '42P01' });
     await migrateDatabase(pool);
@@ -48,9 +95,9 @@ describe('database migrations', () => {
     await pool.query("DELETE FROM schema_migrations WHERE name='002_sso.sql'");
     await expect(verifyDatabaseSchema(pool)).rejects.toThrow('002_sso.sql');
     await pool.query(
-      "UPDATE schema_migrations SET checksum='changed' WHERE name='001_initial.sql'",
+      "UPDATE schema_migrations SET checksum='changed' WHERE name='001_initial_postgres.sql'",
     );
-    await expect(verifyDatabaseSchema(pool)).rejects.toThrow('001_initial.sql');
+    await expect(verifyDatabaseSchema(pool)).rejects.toThrow('001_initial_postgres.sql');
   });
 
   it('uses DDL timeouts only inside the migration transaction', async () => {
@@ -65,8 +112,12 @@ describe('database migrations', () => {
   });
 
   it('initializes an empty database with the complete auth schema and ledger', async () => {
-    expect(await migrateDatabase(pool)).toEqual(['001_initial.sql', '002_sso.sql']);
-    expect((await pool.query('SELECT name,checksum FROM schema_migrations')).rowCount).toBe(2);
+    expect(await migrateDatabase(pool)).toEqual([
+      '001_initial_postgres.sql',
+      '002_sso.sql',
+      '003_office_coordinates.sql',
+    ]);
+    expect((await pool.query('SELECT name,checksum FROM schema_migrations')).rowCount).toBe(3);
     await expect(
       pool.query(
         'SELECT u.auth_mode,s.expires_at FROM users u LEFT JOIN refresh_sessions s ON false LIMIT 0',
@@ -91,8 +142,8 @@ describe('database migrations', () => {
 
   it('serializes simultaneous migrations from multiple replicas', async () => {
     const results = await Promise.all([migrateDatabase(pool), migrateDatabase(pool)]);
-    expect(results.map((names) => names.length).sort()).toEqual([0, 2]);
-    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(2);
+    expect(results.map((names) => names.length).sort()).toEqual([0, 3]);
+    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(3);
     expect((await pool.query('SELECT * FROM offices')).rowCount).toBe(3);
   });
 
@@ -100,13 +151,13 @@ describe('database migrations', () => {
     await migrateDatabase(pool);
     await pool.query("INSERT INTO units(name) VALUES ('Preserved unit')");
     await pool.query(
-      "UPDATE schema_migrations SET checksum='tampered' WHERE name='001_initial.sql'",
+      "UPDATE schema_migrations SET checksum='tampered' WHERE name='001_initial_postgres.sql'",
     );
     await expect(migrateDatabase(pool)).rejects.toThrow(
-      'Applied migration changed: 001_initial.sql',
+      'Applied migration changed: 001_initial_postgres.sql',
     );
     expect((await pool.query("SELECT * FROM units WHERE name='Preserved unit'")).rowCount).toBe(1);
-    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(2);
+    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(3);
   });
 
   it('rolls back all pending schema changes and the ledger if any SQL fails', async () => {

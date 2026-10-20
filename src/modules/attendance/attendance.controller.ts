@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
+import type { RedisClientType } from 'redis';
 import type { Pool } from 'pg';
 import type { Config } from '../../config/env.js';
 import { currentUser } from '../auth/auth.middleware.js';
@@ -15,7 +16,12 @@ import {
 
 import { attendanceInput, attendanceHistoryQuerySchema } from './attendance.schema.js';
 
-export function createAttendanceController(pool: Pool, config: Config, engine: FaceEngine) {
+export function createAttendanceController(
+  pool: Pool,
+  redis: RedisClientType,
+  config: Config,
+  engine: FaceEngine,
+) {
   async function handleAttendance(purpose: Purpose, req: Request, res: Response) {
     const input = attendanceInput.parse(req.body) as AttendanceInputData;
     const image = await validateImage(req.file);
@@ -27,7 +33,17 @@ export function createAttendanceController(pool: Pool, config: Config, engine: F
       .parse(req.get('Idempotency-Key'));
     const user = currentUser(req);
 
-    const result = await recordAttendance(pool, config, engine, user, purpose, key, input, image);
+    const result = await recordAttendance(
+      pool,
+      redis,
+      config,
+      engine,
+      user,
+      purpose,
+      key,
+      input,
+      image,
+    );
 
     res.status(result.httpStatus).json({ ...result.body, request_id: res.locals.requestId });
   }

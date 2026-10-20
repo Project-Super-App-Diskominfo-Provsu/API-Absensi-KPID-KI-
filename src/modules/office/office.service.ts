@@ -1,3 +1,5 @@
+import type { RedisClientType } from 'redis';
+import { locateOffices } from './office.geo.js';
 import type { Pool } from 'pg';
 import { audit } from '../../database/audit.js';
 import { transaction, type Db } from '../../database/client.js';
@@ -5,7 +7,7 @@ import { fail } from '../../shared/errors/api-error.js';
 import {
   findActiveCategory,
   checkCategoryOfficePermission,
-  findPermittedOfficesWithDistance,
+  findPermittedOffices,
   findOfficesByCategory,
   findAllOffices,
   findOfficeByIdForUpdate,
@@ -18,6 +20,7 @@ export type { LocationInput, Office };
 
 export async function selectOffice(
   db: Db,
+  redis: RedisClientType,
   category: string | null,
   input: LocationInput,
   now: Date,
@@ -31,18 +34,16 @@ export async function selectOffice(
       fail(403, 'OFFICE_NOT_ALLOWED', 'Kategori pegawai tidak diizinkan di kantor ini.');
   }
 
-  const locations = await findPermittedOfficesWithDistance(
-    db,
-    category,
-    input.latitude,
-    input.longitude,
-    input.office_id ?? null,
-  );
+  const locations = await findPermittedOffices(db, category, input.office_id ?? null);
 
   if (!locations.rowCount)
     fail(409, 'OFFICE_UNAVAILABLE', 'Lokasi absensi belum siap atau tidak aktif.');
 
-  const inside = locations.rows.filter((o) => o.within_radius) as Office[];
+  const distances = await locateOffices(redis, locations.rows, input.latitude, input.longitude);
+  const inside: Office[] = locations.rows
+    .filter((office) => distances.has(office.id))
+    .map((office) => ({ ...office, distance_m: distances.get(office.id)! }))
+    .sort((a, b) => a.distance_m - b.distance_m || a.code.localeCompare(b.code));
   if (!inside.length)
     fail(422, 'GEOFENCE_OUT_OF_RANGE', 'Posisi di luar radius 50 meter lokasi yang diizinkan.');
 

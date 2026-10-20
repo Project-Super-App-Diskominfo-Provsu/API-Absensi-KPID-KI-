@@ -8,7 +8,7 @@ export interface LocationInput {
   office_id?: string;
 }
 
-export interface Office {
+export interface OfficeLocation {
   id: string;
   code: string;
   name: string;
@@ -18,16 +18,15 @@ export interface Office {
   max_gps_accuracy_m: number;
   max_location_age_s: number;
   timezone: string;
-  distance_m: number;
   active?: boolean;
 }
 
-export interface OfficeQueryResult extends Office {
-  within_radius: boolean;
+export interface Office extends OfficeLocation {
+  distance_m: number;
 }
 
 export const officeFields = `o.id,o.code,o.name,o.radius_m,o.max_gps_accuracy_m,o.max_location_age_s,o.timezone,o.active,
- ST_Y(o.location::geometry) AS latitude,ST_X(o.location::geometry) AS longitude`;
+ o.latitude,o.longitude`;
 
 export async function findActiveCategory(db: Db, categoryCode: string | null) {
   return db.query('SELECT code FROM employee_categories WHERE code=$1 AND active', [categoryCode]);
@@ -44,21 +43,17 @@ export async function checkCategoryOfficePermission(
   );
 }
 
-export async function findPermittedOfficesWithDistance(
+export async function findPermittedOffices(
   db: Db,
   categoryCode: string | null,
-  latitude: number,
-  longitude: number,
   officeId: string | null,
 ) {
-  return db.query<OfficeQueryResult>(
-    `SELECT ${officeFields},
-    ST_Distance(o.location,ST_SetSRID(ST_MakePoint($3,$2),4326)::geography) AS distance_m,
-    ST_DWithin(o.location,ST_SetSRID(ST_MakePoint($3,$2),4326)::geography,o.radius_m) AS within_radius
-    FROM offices o JOIN category_office_permissions p ON p.office_id=o.id
-    WHERE p.employee_category_code=$1 AND o.active AND ($4::uuid IS NULL OR o.id=$4)
-    ORDER BY distance_m,o.code`,
-    [categoryCode, latitude, longitude, officeId],
+  return db.query<OfficeLocation>(
+    `SELECT ${officeFields}
+     FROM offices o JOIN category_office_permissions p ON p.office_id=o.id
+     WHERE p.employee_category_code=$1 AND o.active AND ($2::uuid IS NULL OR o.id=$2)
+     ORDER BY o.code`,
+    [categoryCode, officeId],
   );
 }
 
@@ -90,7 +85,7 @@ export async function updateOfficeData(
   },
 ) {
   return db.query<{ id: string }>(
-    `UPDATE offices SET name=$2,location=CASE WHEN $3::float8 IS NULL THEN NULL ELSE ST_SetSRID(ST_MakePoint($4,$3),4326)::geography END,
+    `UPDATE offices SET name=$2,latitude=$3,longitude=$4,
     max_gps_accuracy_m=$5,max_location_age_s=$6,active=$7 WHERE id=$1 RETURNING id`,
     [
       id,

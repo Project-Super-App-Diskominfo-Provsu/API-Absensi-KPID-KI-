@@ -1,3 +1,4 @@
+import type { RedisClientType } from 'redis';
 import type { Pool } from 'pg';
 import type { Config } from '../../config/env.js';
 import { audit } from '../../database/audit.js';
@@ -74,6 +75,7 @@ export function snapshotOffice(office: Office) {
 
 export async function resolveAttendanceContext(
   db: Db,
+  redis: RedisClientType,
   userId: string,
   input: AttendanceInputData,
   purpose: Purpose,
@@ -88,7 +90,7 @@ export async function resolveAttendanceContext(
   }
 
   await activeDevice(db, userId, input.device_id);
-  const office = await selectOffice(db, user.employee_category_code, input, received);
+  const office = await selectOffice(db, redis, user.employee_category_code, input, received);
   const schedules = await findWorkScheduleForDate(db, userId, received);
   const schedule = schedules.rows[0];
   if (!schedule) fail(409, 'SCHEDULE_NOT_FOUND', 'Jadwal kerja hari ini belum tersedia.');
@@ -114,6 +116,7 @@ export async function resolveAttendanceContext(
 
 export async function recordAttendance(
   pool: Pool,
+  redis: RedisClientType,
   config: Config,
   engine: FaceEngine,
   user: User,
@@ -195,7 +198,15 @@ export async function recordAttendance(
       fail(429, 'RATE_LIMITED', 'Terlalu banyak percobaan ditolak. Tunggu 15 menit.');
     }
 
-    const initial = await resolveAttendanceContext(pool, user.id, input, purpose, received, config);
+    const initial = await resolveAttendanceContext(
+      pool,
+      redis,
+      user.id,
+      input,
+      purpose,
+      received,
+      config,
+    );
     const observation = await engine.observe(image, input.nonce);
     validateObservation(observation, config);
 
@@ -214,7 +225,15 @@ export async function recordAttendance(
         fail(409, 'ATTEMPT_CLOSED', 'Percobaan sudah ditutup.');
       }
 
-      const final = await resolveAttendanceContext(db, user.id, input, purpose, received, config);
+      const final = await resolveAttendanceContext(
+        db,
+        redis,
+        user.id,
+        input,
+        purpose,
+        received,
+        config,
+      );
       if (
         final.template.id !== initial.template.id ||
         final.category !== initial.category ||

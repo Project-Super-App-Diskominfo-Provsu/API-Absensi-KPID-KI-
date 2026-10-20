@@ -177,7 +177,7 @@ export function createApp(
     adminRoutes(pool),
     deviceRoutes(pool),
     faceRoutes(pool, config, engine),
-    attendanceRoutes(pool, config, engine),
+    attendanceRoutes(pool, redis, config, engine),
   );
   app.use((_req, res) =>
     res.status(404).json({

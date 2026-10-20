@@ -1,3 +1,4 @@
+# Legacy PostGIS installations only; fresh deployments use default PostgreSQL.
 # Match the existing PostgreSQL major version before attaching existing data.
 ARG POSTGRES_MAJOR=17
 FROM docker.io/library/postgres:${POSTGRES_MAJOR}-bookworm
