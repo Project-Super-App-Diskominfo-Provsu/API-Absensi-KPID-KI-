@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MIN_PASSWORD_LENGTH } from '../../shared/security/password.js';
 const userFieldsSchema = {
   employee_number: z.string().trim().min(1).max(50),
   name: z.string().trim().min(1).max(200),
@@ -15,7 +16,7 @@ const userFieldsSchema = {
 export const createUserSchema = z
   .object({
     ...userFieldsSchema,
-    password: z.string().min(12).max(128),
+    password: z.string().min(MIN_PASSWORD_LENGTH).max(128),
     role: userFieldsSchema.role.default('EMPLOYEE'),
     unit_id: userFieldsSchema.unit_id.default(null),
     active: userFieldsSchema.active.default(true),

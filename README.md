@@ -44,8 +44,8 @@ npm run db:migrate
 $env:ADMIN_EMAIL = 'admin@domain-instansi.go.id'
 $env:ADMIN_NAME = 'Administrator'
 $env:ADMIN_EMPLOYEE_NUMBER = 'ADMIN-001'
-# Isi password yang dipilih pada environment lokal, minimal 12 karakter.
-$env:ADMIN_PASSWORD = Read-Host 'Password admin awal'
+# Isi password yang dipilih pada environment lokal, minimal 15 karakter.
+$env:ADMIN_PASSWORD = [System.Net.NetworkCredential]::new('', (Read-Host 'Password admin awal' -AsSecureString)).Password
 npm run admin:create
 Remove-Item Env:ADMIN_PASSWORD
 npm run dev
@@ -54,6 +54,8 @@ npm run dev
 API berada di `http://localhost:3000`. Worker dijalankan di terminal terpisah dengan `npm run worker:dev`. `GET /health` hanya menandakan proses hidup. `GET /ready` mengembalikan 503 jika database, Redis, konfigurasi biometrik, atau worker belum siap. Endpoint autentikasi dan administrasi tetap dapat digunakan untuk menyiapkan sistem.
 
 Compose hanya menyediakan dependensi lokal pada loopback, bukan konfigurasi hosting produksi. Image aplikasi dapat dibangun dengan `docker build -t absensi-api .`; image yang sama menjalankan worker dengan command `node dist/worker/server.js`. Environment untuk container harus menunjuk hostname service database/Redis, bukan localhost host. Migrasi dijalankan sebagai langkah deployment terpisah sebelum aplikasi; container runtime tidak membawa source migrator.
+
+Panduan [login internal, staging, dan migrasi untuk pengguna Laravel](docs/internal-auth.md) menjelaskan konfigurasi HTTPS/proxy, masa berlaku token, endpoint password/logout, dan cara menambahkan migrasi. SSO tetap dinonaktifkan sampai konfigurasi Google tersedia. Gunakan `GET /ready/auth` untuk kesiapan database dan Redis pada staging khusus login; `/ready` tetap memeriksa worker wajah juga.
 
 ## Urutan menyiapkan data
 

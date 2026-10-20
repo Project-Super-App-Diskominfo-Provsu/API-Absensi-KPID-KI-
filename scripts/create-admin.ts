@@ -1,4 +1,4 @@
-import { hash } from 'argon2';
+import { hashPassword, MIN_PASSWORD_LENGTH } from '../src/shared/security/password.js';
 import { z } from 'zod';
 import { createPool, transaction } from '../src/database/client.js';
 import { audit } from '../src/database/audit.js';
@@ -6,14 +6,14 @@ const env = z
   .object({
     DATABASE_URL: z.string().url(),
     ADMIN_EMAIL: z.email(),
-    ADMIN_PASSWORD: z.string().min(12).max(128),
+    ADMIN_PASSWORD: z.string().min(MIN_PASSWORD_LENGTH).max(128),
     ADMIN_NAME: z.string().min(1),
     ADMIN_EMPLOYEE_NUMBER: z.string().min(1),
   })
   .parse(process.env);
 const pool = createPool(env.DATABASE_URL);
 try {
-  const password = await hash(env.ADMIN_PASSWORD);
+  const password = await hashPassword(env.ADMIN_PASSWORD);
   await transaction(pool, async (db) => {
     const row = await db.query(
       "INSERT INTO users(employee_number,name,email,password_hash,role) VALUES($1,$2,$3,$4,'SUPER_ADMIN') RETURNING id",

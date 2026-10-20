@@ -1,7 +1,7 @@
 import express from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
-import { rateLimit, ipKeyGenerator } from 'express-rate-limit';
+import { rateLimit } from 'express-rate-limit';
 import { RedisStore } from 'rate-limit-redis';
 import { randomUUID } from 'node:crypto';
 import { pino } from 'pino';
@@ -35,6 +35,10 @@ export function createApp(
   const logger = pino({ level: config.NODE_ENV === 'test' ? 'silent' : 'info' });
   const rateNamespace = config.NODE_ENV === 'test' ? `${randomUUID()}:` : '';
   app.disable('x-powered-by');
+  const trustedProxies = config.TRUST_PROXY.split(',')
+    .map((v) => v.trim())
+    .filter(Boolean);
+  if (trustedProxies.length) app.set('trust proxy', trustedProxies);
   app.use((req, res, next) => {
     res.locals.requestId = randomUUID();
     res.set('X-Request-Id', res.locals.requestId);
@@ -66,6 +70,17 @@ export function createApp(
     }),
   );
   app.get('/health', (_req, res) => res.json({ data: { status: 'ok' } }));
+  app.get('/ready/auth', async (_req, res) => {
+    const result = await Promise.allSettled([
+      pool.query(
+        'SELECT u.auth_mode,s.expires_at FROM users u LEFT JOIN refresh_sessions s ON false LIMIT 0',
+      ),
+      redis.ping(),
+    ]);
+    const database = result[0].status === 'fulfilled',
+      cache = result[1].status === 'fulfilled';
+    res.status(database && cache ? 200 : 503).json({ data: { database, redis: cache } });
+  });
   app.get('/ready', async (_req, res) => {
     const result = await Promise.allSettled([
       pool.query('SELECT 1 FROM category_office_permissions LIMIT 1'),
@@ -79,8 +94,23 @@ export function createApp(
       .status(db && cache && face ? 200 : 503)
       .json({ data: { database: db, redis: cache, face_worker: face } });
   });
+  app.use((req, res, next) => {
+    if (config.NODE_ENV === 'production' && !req.secure) {
+      res.status(400).json({
+        error: { code: 'HTTPS_REQUIRED', message: 'Gunakan HTTPS untuk mengakses API.' },
+        request_id: res.locals.requestId,
+      });
+      return;
+    }
+    next();
+  });
   app.get('/api/v1/openapi.json', (_req, res) => res.json(openapi));
-  function limiter(prefix: string, limit: number, keyGenerator?: (req: express.Request) => string) {
+  function limiter(
+    prefix: string,
+    limit: number,
+    keyGenerator?: (req: express.Request) => string,
+    skipSuccessfulRequests = false,
+  ) {
     return rateLimit({
       windowMs: 15 * 60000,
       limit,
@@ -91,6 +121,7 @@ export function createApp(
         sendCommand: (...args: string[]) => redis.sendCommand(args),
       }),
       keyGenerator,
+      skipSuccessfulRequests,
       handler: (_req, res) =>
         res.status(429).json({
           error: { code: 'RATE_LIMITED', message: 'Terlalu banyak permintaan.' },
@@ -102,16 +133,30 @@ export function createApp(
   app.use(express.json({ limit: '64kb' }));
   app.use(
     '/api/v1/auth',
-    authRoutes(
-      pool,
-      config,
-      limiter(
-        'absensi:login:',
-        10,
-        (req) =>
-          `${ipKeyGenerator(req.ip ?? '127.0.0.1')}:${hash(String(req.body?.email ?? '').toLowerCase())}`,
-      ),
-    ),
+    authRoutes(pool, config, {
+      login: [
+        limiter('absensi:login:ip:', 300),
+        limiter(
+          'absensi:login:account:',
+          10,
+          (req) =>
+            hash(
+              String(req.body?.email ?? '')
+                .trim()
+                .toLowerCase()
+                .slice(0, 254),
+            ),
+          true,
+        ),
+      ],
+      refresh: [
+        limiter('absensi:refresh:ip:', 1000),
+        limiter('absensi:refresh:token:', 30, (req) =>
+          hash(String(req.body?.refresh_token ?? '').slice(0, 100)),
+        ),
+      ],
+      password: [limiter('absensi:password:', 5, (req) => req.user!.id)],
+    }),
   );
   app.use('/api/v1', ssoRoutes(pool, config, limiter('absensi:sso:', 30), ssoProvider));
   app.use('/api/v1', authMiddleware(pool, config));

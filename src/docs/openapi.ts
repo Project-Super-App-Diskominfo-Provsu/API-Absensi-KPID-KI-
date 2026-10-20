@@ -66,7 +66,7 @@ const userProps = {
   employee_number: { ...str, maxLength: 50 },
   name: { ...str, maxLength: 200 },
   email: { ...str, format: 'email' },
-  password: { ...str, minLength: 12, maxLength: 128 },
+  password: { ...str, minLength: 15, maxLength: 128 },
   employee_category_code: { enum: ['KPID', 'KI'] },
   role: { enum: ['EMPLOYEE', 'VERIFIER', 'ADMIN', 'SUPER_ADMIN'], default: 'EMPLOYEE' },
   unit_id: { type: ['string', 'null'], format: 'uuid' },
@@ -90,6 +90,10 @@ export const openapi = {
       ]),
       Login: object({ email: { ...str, format: 'email' }, password: { ...str, maxLength: 128 } }),
       Refresh: object({ refresh_token: str }),
+      ChangePassword: object({
+        current_password: { ...str, minLength: 1, maxLength: 128 },
+        new_password: { ...str, minLength: 15, maxLength: 128 },
+      }),
       CreateUser: object(userProps, [
         'employee_number',
         'name',
@@ -194,6 +198,16 @@ export const openapi = {
       }),
     },
     '/auth/logout': { post: operation('Cabut keluarga sesi aktif', { status: 204, empty: true }) },
+    '/auth/logout-all': {
+      post: operation('Cabut seluruh sesi milik pengguna', { status: 204, empty: true }),
+    },
+    '/auth/change-password': {
+      post: operation('Ubah password dan cabut seluruh sesi; login ulang setelah berhasil', {
+        body: 'ChangePassword',
+        status: 204,
+        empty: true,
+      }),
+    },
     '/me': { get: operation('Profil terkini dan status enrollment') },
     '/offices': { get: operation('Lokasi aktif yang diizinkan kategori pegawai') },
     '/admin/offices': { get: operation('Daftar ketiga kantor, termasuk yang belum aktif') },

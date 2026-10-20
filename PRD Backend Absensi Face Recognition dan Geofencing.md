@@ -195,6 +195,8 @@ Prefix: `/api/v1`. Autentikasi memakai Bearer token kecuali disebutkan lain.
 | POST | /auth/login | Publik | Login |
 | POST | /auth/refresh | Publik | Perbarui token |
 | POST | /auth/logout | Pegawai | Cabut refresh token |
+| POST | /auth/logout-all | Pegawai | Cabut seluruh sesi sendiri |
+| POST | /auth/change-password | Pegawai | Validasi password saat ini, ubah password, cabut seluruh sesi |
 | GET | /me | Pegawai | Profil, kategori pegawai, peran, dan status enrollment |
 | POST | /devices/bind | Pegawai | Ajukan pengikatan perangkat |
 | PATCH | /admin/devices/:id | Admin | Setujui atau cabut perangkat |
@@ -243,7 +245,7 @@ Aturan lokasi berlaku juga untuk request check-out. `office_id` opsional sebagai
 | Replay request | Nonce sekali pakai, timestamp, Idempotency-Key |
 | Aplikasi dimodifikasi atau perangkat di-root | Device integrity attestation; tolak atau tandai untuk review |
 | Pencurian template wajah | Enkripsi, akses terbatas, retensi singkat |
-| Brute force login | Rate limit dan lockout bertahap |
+| Brute force login | Rate limit Redis per IP dan kegagalan per akun lintas IP; pembatasan 15 menit, bukan lockout progresif |
 | Penyalahgunaan oleh admin | Audit log append-only, pemisahan peran, approval koreksi |
 
 ## 14. Fase dan Milestone (usulan kasar)
@@ -372,3 +374,17 @@ Struktur aktual mengikuti modular monolith dalam `src/modules`: admin, attendanc
 Audit struktur menghapus ekspor compatibility lama pada root `src` dan implementasi penerbitan token yang terduplikasi. Pagination tidak lagi bergantung pada controller admin; validasi gambar dipakai bersama API dan worker. Aturan bisnis dan kontrak HTTP dipertahankan. `docs/architecture.md` menjelaskan alasan pemisahan dan aturan dependency; `npm run check:architecture` memeriksa batas modul dan siklus import statis. Build membersihkan output `dist` sebelum kompilasi agar file hasil build sebelum refactor tidak tertinggal.
 
 Verifikasi setelah refactor: typecheck, formatting, pemeriksaan arsitektur, build lokal, 10 tes unit/kontrak/worker, 36 tes integrasi, migrasi ulang, dan smoke test HTTP lulus. Server lokal sudah dimuat ulang. Rebuild image Docker setelah refactor belum terverifikasi selesai karena instalasi dependensi dari registry berlangsung lambat; build tersebut dihentikan. Hasil Docker pada bagian 17.4 adalah hasil sebelum refactor.
+
+### 17.6 Login Internal untuk Staging
+
+Prioritas saat ini adalah login internal; SSO tetap nonaktif sampai Google Console dan kredensial integrasi tersedia. Callback SSO tidak diperlukan untuk login internal. Kontrak serta prosedur staging dan migrasi berada di `docs/internal-auth.md`.
+
+- Access JWT maksimal 10 menit dengan verifikasi algoritme HS256, tipe, issuer, audience, waktu, dan claim identitas sesi. Sesi aktif serta role/kategori diperiksa kembali melalui database pada request terlindungi.
+- Refresh rotation mempertahankan batas absolut 30 hari sejak login. Refresh token hanya disimpan sebagai hash; reuse mencabut seluruh keluarga sesi. Row lock pengguna mencegah logout bersamaan dengan refresh meninggalkan token anak aktif.
+- Logout semua sesi dan perubahan password tersedia. Perubahan password membutuhkan password lama, password baru 15–128 karakter, hash Argon2id 64 MiB/tiga iterasi/parallelism 1, serta pencabutan seluruh sesi. Login memeriksa ulang hash dalam transaksi untuk menolak hasil verifikasi password lama yang sudah berubah.
+- Batas operasi Argon2 empat per proses membatasi penggunaan memori. Login mempunyai batas IP dan kegagalan per akun lintas IP; refresh menggunakan kuota terpisah agar tidak menghabiskan kuota login jaringan kantor. Redis menyimpan penghitung, termasuk untuk beberapa proses API.
+- Mode production menolak request bisnis tanpa HTTPS. Alamat proxy tepercaya diatur eksplisit melalui `TRUST_PROXY`; header forwarded dari koneksi tak tepercaya tidak dapat meloloskan syarat HTTPS. Konfigurasi proxy dan isolasi jaringan harus diuji di staging.
+- `/ready/auth` memeriksa database/kolom autentikasi dan Redis tanpa mensyaratkan worker wajah. `/ready` tetap memeriksa kesiapan absensi termasuk worker. Model belum tersedia, sehingga kesiapan login tidak berarti absensi siap operasional.
+- Pengujian regresi mencakup kegagalan kredensial generik, token salah/tanpa claim wajib/kedaluwarsa, batas kegagalan akun lintas IP, login sukses berulang, refresh pada IP bersama, expiry absolut, pencabutan sesi, perubahan password, serta race logout/refresh. Tidak ada perubahan skema pada hardening ini. Build Docker dan deployment HTTPS perlu diverifikasi ulang pada lingkungan staging sebenarnya.
+
+Verifikasi lokal 20 Oktober 2026: 19 tes unit/kontrak/worker dan 48 tes integrasi lulus, bersama typecheck, formatting, pemeriksaan arsitektur 54 source tanpa siklus runtime, serta build. Audit npm melaporkan nol kerentanan saat pemeriksaan. Migrasi ulang berhasil tanpa menerapkan ulang file lama. Server hasil build dimuat ulang: `/health` dan `/ready/auth` 200, metode login local=true/sso=false, profil tanpa token 401, dan OpenAPI memuat 28 path. `/ready` tetap 503 karena worker/model wajah belum siap. Hasil lokal ini tidak menjamin tidak ada bug dan belum memvalidasi hosting staging atau akurasi biometrik.

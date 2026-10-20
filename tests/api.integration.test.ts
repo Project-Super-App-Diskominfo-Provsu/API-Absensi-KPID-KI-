@@ -13,6 +13,7 @@ import { selectOffice } from '../src/modules/office/office.service.js';
 import { attendancePayload } from '../src/modules/attendance/attendance.service.js';
 import { attendanceInput } from '../src/modules/attendance/attendance.schema.js';
 import type { FaceEngine } from '../src/modules/face/face.types.js';
+import { issueSession, logoutUser } from '../src/modules/auth/auth.service.js';
 
 const databaseName = `absensi_test_${randomUUID().replaceAll('-', '')}`;
 const adminUrl =
@@ -625,6 +626,236 @@ describe('device and enrollment approvals', () => {
             .send(change)
         ).status,
       ).toBe(403);
+    }
+  });
+});
+
+describe('internal login hardening', () => {
+  it('returns the same login failure for unknown, disabled, SSO-only and wrong-password accounts', async () => {
+    const email = (await pool.query('SELECT email FROM users WHERE id=$1', [user])).rows[0].email;
+    const call = (email: string) =>
+      request(app).post('/api/v1/auth/login').send({ email, password: 'wrong-password-value' });
+    const unknown = await call(`${randomUUID()}@example.test`),
+      wrong = await call(email);
+    await pool.query('UPDATE users SET active=false WHERE id=$1', [user]);
+    const inactive = await call(email);
+    await pool.query("UPDATE users SET active=true,auth_mode='SSO' WHERE id=$1", [user]);
+    const sso = await call(email);
+    for (const result of [unknown, wrong, inactive, sso]) {
+      expect(result.status, result.text).toBe(401);
+      expect(result.body.error).toEqual(unknown.body.error);
+    }
+  });
+  it('limits failed account logins across different client IPs', async () => {
+    const scoped = createApp(pool, redis, { ...config, TRUST_PROXY: '127.0.0.1,::1' }, engine);
+    const email = (await pool.query('SELECT email FROM users WHERE id=$1', [user])).rows[0].email;
+    for (let i = 0; i < 11; i++) {
+      const result = await request(scoped)
+        .post('/api/v1/auth/login')
+        .set('X-Forwarded-For', `192.0.2.${i + 1}`)
+        .send({ email, password: 'incorrect-password' });
+      expect(result.status, result.text).toBe(i < 10 ? 401 : 429);
+    }
+  });
+  it('does not count successful logins as failed account attempts', async () => {
+    const email = (await pool.query('SELECT email FROM users WHERE id=$1', [user])).rows[0].email;
+    for (let i = 0; i < 12; i++) expect((await login(email)).status).toBe(200);
+  });
+  it('revokes all user sessions while leaving another user logged in', async () => {
+    const second = await issueSession(pool, config, user, randomUUID());
+    const response = await request(app)
+      .post('/api/v1/auth/logout-all')
+      .auth(access, { type: 'bearer' });
+    expect(response.status, response.text).toBe(204);
+    for (const value of [access, second.access_token])
+      expect((await request(app).get('/api/v1/me').auth(value, { type: 'bearer' })).status).toBe(
+        401,
+      );
+    expect(
+      (await request(app).get('/api/v1/me').auth(adminAccess, { type: 'bearer' })).status,
+    ).toBe(200);
+  });
+  it('changes the password and revokes access and refresh tokens in all sessions', async () => {
+    const email = (await pool.query('SELECT email FROM users WHERE id=$1', [user])).rows[0].email;
+    const other = await issueSession(pool, config, user, randomUUID());
+    const call = (current: string, next: string) =>
+      request(app)
+        .post('/api/v1/auth/change-password')
+        .auth(access, { type: 'bearer' })
+        .send({ current_password: current, new_password: next });
+    expect((await call('incorrect-password', 'new-password-secure-456')).status).toBe(401);
+    expect((await request(app).get('/api/v1/me').auth(access, { type: 'bearer' })).status).toBe(
+      200,
+    );
+    const changed = await call('test-password-123', 'new-password-secure-456');
+    expect(changed.status, changed.text).toBe(204);
+    expect(
+      (await request(app).get('/api/v1/me').auth(other.access_token, { type: 'bearer' })).status,
+    ).toBe(401);
+    expect(
+      (await request(app).post('/api/v1/auth/refresh').send({ refresh_token: other.refresh_token }))
+        .status,
+    ).toBe(401);
+    expect((await login(email)).status).toBe(401);
+    expect(
+      (
+        await request(app)
+          .post('/api/v1/auth/login')
+          .send({ email, password: 'new-password-secure-456' })
+      ).status,
+    ).toBe(200);
+    const saved = (await pool.query('SELECT password_hash FROM users WHERE id=$1', [user])).rows[0]
+      .password_hash;
+    expect(saved).toMatch(/^\$argon2id\$/);
+    expect(saved).not.toContain('new-password-secure-456');
+  });
+  it('rejects weak new passwords and requests without authentication', async () => {
+    expect(
+      (
+        await request(app)
+          .post('/api/v1/auth/change-password')
+          .send({ current_password: 'test-password-123', new_password: 'new-password-secure-456' })
+      ).status,
+    ).toBe(401);
+    expect(
+      (
+        await request(app)
+          .post('/api/v1/auth/change-password')
+          .auth(access, { type: 'bearer' })
+          .send({ current_password: 'test-password-123', new_password: 'short' })
+      ).status,
+    ).toBe(400);
+  });
+  it('does not save plaintext refresh tokens and rejects expired refresh sessions', async () => {
+    const session = await issueSession(pool, config, user, randomUUID());
+    const row = (
+      await pool.query('SELECT token_hash FROM refresh_sessions WHERE token_hash=$1', [
+        hash(session.refresh_token),
+      ])
+    ).rows[0];
+    expect(row.token_hash).not.toBe(session.refresh_token);
+    await pool.query('UPDATE refresh_sessions SET expires_at=$2 WHERE token_hash=$1', [
+      row.token_hash,
+      new Date(Date.now() - 60000),
+    ]);
+    expect(
+      (
+        await request(app)
+          .post('/api/v1/auth/refresh')
+          .send({ refresh_token: session.refresh_token })
+      ).status,
+    ).toBe(401);
+  });
+  it('provides auth readiness without an available biometric worker or Google credentials', async () => {
+    const scoped = createApp(pool, redis, config, {
+      ready: async () => false,
+      observe: engine.observe,
+    });
+    expect((await request(scoped).get('/ready/auth')).status).toBe(200);
+    expect((await request(scoped).get('/ready')).status).toBe(503);
+    const methods = await request(scoped).get('/api/v1/auth/methods');
+    expect(methods.body.data).toMatchObject({ local: true, sso: false });
+    expect(
+      (
+        await request(scoped)
+          .post('/api/v1/auth/sso/start')
+          .send({ code_challenge: 'x'.repeat(43) })
+      ).body.error.code,
+    ).toBe('SSO_NOT_CONFIGURED');
+  });
+  it('requires HTTPS in production and trusts forwarded protocol only from configured proxies', async () => {
+    const secured = createApp(pool, redis, { ...config, NODE_ENV: 'production' }, engine);
+    const spoof = await request(secured)
+      .post('/api/v1/auth/login')
+      .set('X-Forwarded-Proto', 'https')
+      .send({ email: 'nobody@example.test', password: 'bad' });
+    expect(spoof.body.error.code).toBe('HTTPS_REQUIRED');
+    const trusted = createApp(
+      pool,
+      redis,
+      { ...config, NODE_ENV: 'production', TRUST_PROXY: '127.0.0.1,::1' },
+      engine,
+    );
+    const accepted = await request(trusted)
+      .post('/api/v1/auth/login')
+      .set('X-Forwarded-Proto', 'https')
+      .send({ email: `${randomUUID()}@example.test`, password: 'bad' });
+    expect(accepted.status, accepted.text).toBe(401);
+    expect(accepted.body.error.code).toBe('LOGIN_FAILED');
+  });
+  it('allows independent refreshes for more than ten sessions behind the same office IP', async () => {
+    const tokens = [];
+    for (let i = 0; i < 11; i++) tokens.push(await issueSession(pool, config, user, randomUUID()));
+    for (const session of tokens) {
+      const result = await request(app)
+        .post('/api/v1/auth/refresh')
+        .send({ refresh_token: session.refresh_token });
+      expect(result.status, result.text).toBe(200);
+    }
+  });
+  it('does not extend the original session expiry when rotating a refresh token', async () => {
+    const session = await issueSession(pool, config, user, randomUUID());
+    const expiry = new Date(Date.now() + 300000);
+    await pool.query('UPDATE refresh_sessions SET expires_at=$2 WHERE token_hash=$1', [
+      hash(session.refresh_token),
+      expiry,
+    ]);
+    const rotated = await request(app)
+      .post('/api/v1/auth/refresh')
+      .send({ refresh_token: session.refresh_token });
+    expect(rotated.status, rotated.text).toBe(200);
+    const saved = (
+      await pool.query('SELECT expires_at FROM refresh_sessions WHERE token_hash=$1', [
+        hash(rotated.body.data.refresh_token),
+      ])
+    ).rows[0];
+    expect(saved.expires_at.getTime()).toBe(expiry.getTime());
+  });
+  it('revokes a concurrently rotated child session when logout waits for its transaction', async () => {
+    const family = randomUUID(),
+      original = await issueSession(pool, config, user, family);
+    const old = (
+      await pool.query('SELECT id FROM refresh_sessions WHERE token_hash=$1', [
+        hash(original.refresh_token),
+      ])
+    ).rows[0].id;
+    const db = await pool.connect();
+    let pending: Promise<void> | undefined;
+    try {
+      await db.query('BEGIN');
+      await db.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [user]);
+      const pid = (await db.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+      await db.query('UPDATE refresh_sessions SET revoked_at=now() WHERE id=$1', [old]);
+      await issueSession(db, config, user, family);
+      pending = logoutUser(pool, old);
+      void pending.catch(() => {});
+      let waiting = false;
+      for (let i = 0; i < 100; i++) {
+        const blocked = await pool.query(
+          'SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid))',
+          [pid],
+        );
+        if (blocked.rowCount) {
+          waiting = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(waiting).toBe(true);
+      await db.query('COMMIT');
+      await pending;
+      expect(
+        (
+          await pool.query(
+            'SELECT id FROM refresh_sessions WHERE family_id=$1 AND revoked_at IS NULL',
+            [family],
+          )
+        ).rowCount,
+      ).toBe(0);
+    } finally {
+      await db.query('ROLLBACK');
+      db.release();
+      if (pending) await pending;
     }
   });
 });

@@ -1,4 +1,4 @@
-import argon2 from 'argon2';
+import { hashPassword } from '../../shared/security/password.js';
 import type { Pool } from 'pg';
 import { audit } from '../../database/audit.js';
 import { transaction, type Db } from '../../database/client.js';
@@ -73,7 +73,7 @@ export async function createUser(
     fail(403, 'FORBIDDEN', 'Kategori atau peran di luar kewenangan.');
   }
 
-  const passwordHash = await argon2.hash(input.password);
+  const passwordHash = await hashPassword(input.password);
   return transaction(pool, async (db) => {
     const created = await insertUser(db, {
       employee_number: input.employee_number,

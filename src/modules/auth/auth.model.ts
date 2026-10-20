@@ -18,7 +18,7 @@ export interface RefreshSession {
   family_id: string;
   token_hash: string;
   revoked_at: string | null;
-  expires_at: string;
+  expires_at: Date;
   created_at: string;
   active?: boolean;
 }
@@ -35,10 +35,10 @@ export async function findUserByEmail(db: Db, email: string) {
   }>('SELECT id,password_hash,active,auth_mode FROM users WHERE email=$1', [email]);
 }
 
-export async function findActiveUserForShare(db: Db, userId: string) {
+export async function findActiveUserForShare(db: Db, userId: string, passwordHash: string) {
   return db.query<{ id: string }>(
-    "SELECT id FROM users WHERE id=$1 AND active AND auth_mode IN ('LOCAL','BOTH') FOR SHARE",
-    [userId],
+    "SELECT id FROM users WHERE id=$1 AND active AND auth_mode IN ('LOCAL','BOTH') AND password_hash=$2 FOR SHARE",
+    [userId, passwordHash],
   );
 }
 
@@ -70,12 +70,26 @@ export async function revokeSessionById(db: Db, sessionId: string) {
   return db.query('UPDATE refresh_sessions SET revoked_at=now() WHERE id=$1', [sessionId]);
 }
 
-export async function revokeSessionBySessionIdFamily(db: Db, sessionId: string) {
-  return db.query(
-    `UPDATE refresh_sessions SET revoked_at=COALESCE(revoked_at,now())
-    WHERE family_id=(SELECT family_id FROM refresh_sessions WHERE id=$1)`,
+export async function findSessionById(db: Db, sessionId: string) {
+  return db.query<{ user_id: string; family_id: string }>(
+    'SELECT user_id,family_id FROM refresh_sessions WHERE id=$1',
     [sessionId],
   );
+}
+export async function revokeAllUserSessions(db: Db, userId: string) {
+  return db.query(
+    'UPDATE refresh_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL',
+    [userId],
+  );
+}
+export async function findPasswordForUpdate(db: Db, userId: string) {
+  return db.query<{ password_hash: string; active: boolean; auth_mode: User['auth_mode'] }>(
+    'SELECT password_hash,active,auth_mode FROM users WHERE id=$1 FOR UPDATE',
+    [userId],
+  );
+}
+export async function updatePassword(db: Db, userId: string, encoded: string) {
+  return db.query('UPDATE users SET password_hash=$2 WHERE id=$1', [userId, encoded]);
 }
 
 export async function findUserWithValidSession(db: Db, userId: string, sessionId: string) {
@@ -91,10 +105,11 @@ export async function insertRefreshSession(
   userId: string,
   familyId: string,
   tokenHash: string,
+  expiresAt?: Date,
 ) {
-  return db.query<{ id: string }>(
+  return db.query<{ id: string; expires_at: Date }>(
     `INSERT INTO refresh_sessions(user_id,family_id,token_hash,expires_at)
-    VALUES($1,$2,$3,now()+interval '30 days') RETURNING id`,
-    [userId, familyId, tokenHash],
+    VALUES($1,$2,$3,COALESCE($4::timestamptz,now()+interval '30 days')) RETURNING id,expires_at`,
+    [userId, familyId, tokenHash, expiresAt ?? null],
   );
 }

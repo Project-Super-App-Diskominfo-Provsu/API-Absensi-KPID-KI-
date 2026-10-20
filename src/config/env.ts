@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isIP } from 'node:net';
 
 const score = z.preprocess(
   (v) => (v === '' ? undefined : v),
@@ -15,6 +16,29 @@ const schema = z
       .string()
       .refine((v) => Buffer.from(v, 'base64').length === 32, 'Must decode to 32 bytes'),
     CORS_ORIGINS: z.string().default(''),
+    TRUST_PROXY: z
+      .string()
+      .default('')
+      .refine(
+        (value) =>
+          value
+            .split(',')
+            .map((v) => v.trim())
+            .filter(Boolean)
+            .every((entry) => {
+              const [address, prefix, ...rest] = entry.split('/');
+              const version = isIP(address ?? '');
+              return (
+                version > 0 &&
+                rest.length === 0 &&
+                (prefix === undefined ||
+                  (/^\d+$/.test(prefix) &&
+                    Number(prefix) >= 0 &&
+                    Number(prefix) <= (version === 4 ? 32 : 128)))
+              );
+            }),
+        'TRUST_PROXY must list explicit proxy IP addresses or CIDRs.',
+      ),
     SSO_ENABLED: z.enum(['true', 'false']).default('false'),
     SSO_ISSUER: z.string().default(''),
     SSO_CLIENT_ID: z.string().default(''),
