@@ -41,7 +41,7 @@ Kuota login dan refresh terpisah agar pegawai pada jaringan kantor yang sama tet
 
 ## Konfigurasi staging
 
-1. Gunakan database dan Redis staging terpisah dari lokal/produksi. Siapkan backup dan kredensial migrasi terpisah dari role runtime yang tidak memiliki hak pemilik/superuser.
+1. Gunakan database PostgreSQL dengan PostGIS dan Redis staging terpisah dari lokal/produksi. Siapkan backup dan kredensial migrasi terpisah dari role runtime yang tidak memiliki hak pemilik/superuser.
 2. Isi `JWT_SECRET` dengan secret acak sesuai `.env.example`. Untuk staging khusus login/admin, `BIOMETRIC_KEY_BASE64` dan `FACE_WORKER_TOKEN` boleh belum diisi. Operasi enrollment dan absensi mengembalikan `503 FACE_NOT_CONFIGURED` sampai key, worker, model, dan threshold lengkap. Untuk mengaktifkan biometrik, gunakan secret berbeda untuk ketiga variabel tersebut; template yang sudah terenkripsi tetap membutuhkan key asli. Jangan commit `.env`, memakai secret contoh, atau membagikannya di chat.
 3. Tetapkan `NODE_ENV=production`, `SSO_ENABLED=false`, dan daftar origin web yang diizinkan pada `CORS_ORIGINS` bila digunakan. CORS bukan pengganti autentikasi Android.
 4. Pasang reverse proxy dengan HTTPS. Isi `TRUST_PROXY` hanya dengan alamat IP/CIDR proxy sebenarnya, dipisahkan koma. Jangan mempercayai semua alamat. Proxy harus menimpa header forwarded dari klien, terutama `X-Forwarded-For` dan `X-Forwarded-Proto`, dan akses langsung publik ke port API harus dibatasi.

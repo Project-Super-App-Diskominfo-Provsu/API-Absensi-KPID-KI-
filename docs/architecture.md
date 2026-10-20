@@ -21,7 +21,7 @@ src/
     auth/
     device/
     face/
-    office/                     # Koordinat PostgreSQL, pengukuran Redis GEO
+    office/                     # Koordinat dan geofencing PostGIS
     sso/
   shared/
     errors/api-error.ts        # Error aplikasi tanpa dependency Express
@@ -81,4 +81,4 @@ Build membersihkan hanya direktori `dist` milik proyek yang targetnya diverifika
 
 Refactor struktur tidak mengubah URL endpoint, matriks kategori-lokasi, radius 50 meter, perilaku signature/idempotency, atau kebijakan fail-closed. SSO dan biometrik tetap memerlukan konfigurasi operasional; respons 503 ketika layanan tersebut belum siap bukan error kompilasi.
 
-PostgreSQL standar menjadi sumber data koordinat kantor. `office.geo.ts` menjalankan pengukuran Redis GEO atomik dari snapshot koordinat terbaru tanpa cache bersama; service kantor menerapkan izin kategori, urutan jarak/kode, akurasi, usia GPS, dan radius 50 meter. Redis diteruskan dari komposisi aplikasi sampai workflow absensi; model kantor hanya mengakses PostgreSQL.
+PostgreSQL/PostGIS menyimpan koordinat asli dan menghitung geofencing melalui ST_DWithin/ST_Distance pada geography dengan spheroid WGS84. Service kantor menerapkan izin kategori, urutan jarak/kode, akurasi, usia GPS, serta radius 50 meter. Redis dipakai rate limiter pada komposisi HTTP dan tidak diteruskan ke service absensi/lokasi. Migration 004 mengaktifkan PostGIS; migration dan baseline lama tidak diubah.
