@@ -6,11 +6,28 @@ services:
       context: .
     init: true
     restart: unless-stopped
-    env_file: .env
     environment:
       NODE_ENV: production
       PORT: "3000"
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in the deployment environment or .env}
+      REDIS_URL: ${REDIS_URL:?Set REDIS_URL in the deployment environment or .env}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in the deployment environment or .env}
+      BIOMETRIC_KEY_BASE64: ${BIOMETRIC_KEY_BASE64:?Set BIOMETRIC_KEY_BASE64 in the deployment environment or .env}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      TRUST_PROXY: ${TRUST_PROXY:-}
+      SSO_ENABLED: ${SSO_ENABLED:-false}
+      SSO_ISSUER: ${SSO_ISSUER:-}
+      SSO_CLIENT_ID: ${SSO_CLIENT_ID:-}
+      SSO_CLIENT_SECRET: ${SSO_CLIENT_SECRET:-}
+      SSO_REDIRECT_URI: ${SSO_REDIRECT_URI:-}
+      SSO_TOKEN_AUTH_METHOD: ${SSO_TOKEN_AUTH_METHOD:-none}
       FACE_WORKER_URL: http://face-worker:8000
+      FACE_WORKER_TOKEN: ${FACE_WORKER_TOKEN:-}
+      FACE_MODEL_VERSION: ${FACE_MODEL_VERSION:-}
+      FACE_MATCH_THRESHOLD: ${FACE_MATCH_THRESHOLD:-}
+      FACE_REVIEW_THRESHOLD: ${FACE_REVIEW_THRESHOLD:-}
+      FACE_LIVENESS_THRESHOLD: ${FACE_LIVENESS_THRESHOLD:-}
+      FACE_QUALITY_THRESHOLD: ${FACE_QUALITY_THRESHOLD:-}
     ports: ["127.0.0.1:${API_HOST_PORT:-3000}:3000"]
     extra_hosts: ["host.docker.internal:host-gateway"]
     read_only: true

@@ -20,6 +20,44 @@ API mengikat port host pada loopback saja: `127.0.0.1:3000` secara default. Pasa
 
 `docker compose config --quiet` memvalidasi konfigurasi tanpa mencetak environment berisi secret. Jangan membagikan output penuh `docker compose config`, `docker inspect`, atau log proxy yang memuat kredensial.
 
+## Environment runtime dan Dokploy
+
+Compose memetakan variabel aplikasi secara eksplisit dari environment proses Compose atau file `.env` ke container API. Empat variabel wajib (`DATABASE_URL`, `REDIS_URL`, `JWT_SECRET`, `BIOMETRIC_KEY_BASE64`) yang hilang atau kosong menghentikan Compose sebelum container dibuat. Environment proses Compose mempunyai prioritas atas `.env`; periksa apakah ada variabel shell lama yang menimpa nilai file.
+
+Jika deployment menggunakan Dokploy dengan build type Dockerfile, isi variabel pada environment runtime aplikasi, simpan, lalu redeploy/recreate container. Build arguments saja tidak mengisi `process.env` aplikasi. File `.env` sengaja dikecualikan melalui `.dockerignore` dan tidak disalin ke image. Jika menggunakan deployment Compose, gunakan `compose.yaml` ini dan pastikan environment deployment tersedia untuk interpolasi Compose.
+
+Untuk Docker langsung, berikan file saat membuat container:
+
+```sh
+docker build -t absensi-api:local .
+docker run -d --name absensi-api --env-file .env -p 127.0.0.1:3000:3000 absensi-api:local
+```
+
+Alamat database/Redis harus dapat dijangkau dari jaringan container. Jika keduanya berada di jaringan Docker privat, tambahkan `--network NAMA_JARINGAN` yang sama. Untuk hostname layanan pada Dokploy, gunakan jaringan tempat layanan tersebut terhubung.
+
+Error `expected string, received undefined` pada `BIOMETRIC_KEY_BASE64` berarti variabel tidak ada di environment proses Node. Ini berbeda dari key kosong atau key yang gagal didekode menjadi 32 byte. Baris komentar `# BIOMETRIC_KEY_BASE64=` tidak menimpa nilai aktif pada parser env standar. Hindari nama variabel aktif yang sama lebih dari sekali.
+
+Periksa hanya status variabel, tanpa mencetak nilainya:
+
+```sh
+docker compose exec api node -e 'for (const k of ["DATABASE_URL","REDIS_URL","JWT_SECRET","BIOMETRIC_KEY_BASE64"]) console.log(k + ": " + (process.env[k] === undefined ? "missing" : process.env[k] === "" ? "empty" : "set"))'
+```
+
+Jika container terus restart, jalankan pemeriksaan pada container sekali jalan:
+
+```sh
+docker compose run --rm --no-deps api node -e 'const v = process.env.BIOMETRIC_KEY_BASE64; console.log("BIOMETRIC_KEY_BASE64: " + (v === undefined ? "missing" : v === "" ? "empty" : Buffer.from(v, "base64").length === 32 ? "set, decodes to 32 bytes" : "invalid length"))'
+```
+
+Untuk deployment Dockerfile, jalankan pemeriksaan melalui terminal container platform atau ganti `docker compose exec api` dengan `docker exec NAMA_CONTAINER`. Setelah mengubah environment, buat ulang container; `docker restart` saja tetap memakai environment container lama:
+
+```sh
+docker compose config --quiet
+docker compose up -d --build --force-recreate --wait api
+```
+
+Jangan mengganti key biometrik secara otomatis ketika variabel hilang: template wajah yang sudah dienkripsi memerlukan key lama agar dapat dibaca.
+
 ## Worker wajah opsional
 
 Untuk staging login saja, profil ini tidak perlu diaktifkan. API tetap menolak operasi wajah ketika worker belum tersedia. Untuk mengaktifkan biometrik:

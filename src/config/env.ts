@@ -13,7 +13,10 @@ const schema = z
     REDIS_URL: z.string().url(),
     JWT_SECRET: z.string().min(32),
     BIOMETRIC_KEY_BASE64: z
-      .string()
+      .string({
+        error:
+          'BIOMETRIC_KEY_BASE64 must be supplied to the running container. Set a runtime environment variable, use docker run --env-file, or configure Compose environment. Build arguments do not populate process.env.',
+      })
       .refine((v) => Buffer.from(v, 'base64').length === 32, 'Must decode to 32 bytes'),
     CORS_ORIGINS: z.string().default(''),
     TRUST_PROXY: z
