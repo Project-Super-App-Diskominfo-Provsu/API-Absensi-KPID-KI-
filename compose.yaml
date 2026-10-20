@@ -46,7 +46,7 @@ services:
     image: absensi-api:${APP_IMAGE_TAG:-local}
     build:
       context: .
-    command: ["node", "dist/worker/server.js"]
+    command: ["node", "--env-file-if-exists=/app/.env", "dist/worker/server.js"]
     init: true
     restart: unless-stopped
     environment:

@@ -26,6 +26,10 @@ Compose memetakan variabel aplikasi secara eksplisit dari environment proses Com
 
 Jika deployment menggunakan Dokploy dengan build type Dockerfile, isi variabel pada environment runtime aplikasi, simpan, lalu redeploy/recreate container. Build arguments saja tidak mengisi `process.env` aplikasi. File `.env` sengaja dikecualikan melalui `.dockerignore` dan tidak disalin ke image. Jika menggunakan deployment Compose, gunakan `compose.yaml` ini dan pastikan environment deployment tersedia untuk interpolasi Compose.
 
+Startup API dan worker menggunakan `--env-file-if-exists`: image membaca `/app/.env` jika file tersebut tersedia saat runtime, misalnya melalui file mount read-only. `npm start` dan `npm run worker:start` membaca `.env` pada working directory. Environment container tetap mempunyai prioritas atas isi file, termasuk nilai kosong. File tidak wajib tersedia jika semua variabel telah diinjeksi sebagai environment. Variabel wajib yang tidak ditemukan pada kedua sumber tetap membuat startup gagal.
+
+CMD Docker sebelumnya menjalankan `node dist/server.js` sehingga `.env` yang tersedia di container tidak dibaca, berbeda dari `npm start`. Dukungan pembacaan file ini memperbaiki ketidakkonsistenan tersebut. File `.env` yang hanya dibuat pada host/build context Dokploy tetap harus dipasang ke `/app/.env` atau diteruskan sebagai environment runtime; flag Node tidak menyalin file dari host. Deployment Application Dockerfile tidak menggunakan `compose.yaml`.
+
 Untuk Docker langsung, berikan file saat membuat container:
 
 ```sh
