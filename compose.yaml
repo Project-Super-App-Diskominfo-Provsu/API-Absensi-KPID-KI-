@@ -24,3 +24,34 @@ services:
       timeout: 5s
       start_period: 20s
       retries: 3
+  face-worker:
+    profiles: [biometrics]
+    image: absensi-api:${APP_IMAGE_TAG:-local}
+    build:
+      context: .
+    command: ["node", "dist/worker/server.js"]
+    init: true
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      FACE_WORKER_PORT: "8000"
+      FACE_WORKER_TOKEN: ${FACE_WORKER_TOKEN:-}
+      FACE_MANIFEST_PATH: /app/models/manifest.json
+    volumes:
+      - type: bind
+        source: ./models
+        target: /app/models
+        read_only: true
+        bind:
+          create_host_path: false
+    read_only: true
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    stop_grace_period: 20s
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8000/ready',{headers:{authorization:'Bearer '+process.env.FACE_WORKER_TOKEN}}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
