@@ -5,6 +5,11 @@ import { createPool } from './database/client.js';
 import { createApp } from './app.js';
 const logger = pino();
 const config = readConfig();
+if (!config.BIOMETRIC_KEY_BASE64) {
+  logger.warn(
+    'Biometric encryption key is not configured; enrollment and biometric attendance are disabled.',
+  );
+}
 const pool = createPool(config.DATABASE_URL);
 pool.on('error', () => logger.error('PostgreSQL connection error'));
 const redis = createClient({ url: config.REDIS_URL });

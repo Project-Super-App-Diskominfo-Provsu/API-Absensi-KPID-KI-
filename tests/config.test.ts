@@ -14,17 +14,24 @@ describe('runtime environment', () => {
     expect(readConfig(env).BIOMETRIC_KEY_BASE64).toBe(env.BIOMETRIC_KEY_BASE64);
   });
 
-  it('explains how to inject a missing biometric key into the container', () => {
-    expect(() => readConfig({ ...env, BIOMETRIC_KEY_BASE64: undefined })).toThrow(
-      'BIOMETRIC_KEY_BASE64 must be supplied to the running container',
-    );
+  it.each([undefined, ''])('allows auth startup with biometric key %s', (key) => {
+    expect(readConfig({ ...env, BIOMETRIC_KEY_BASE64: key }).BIOMETRIC_KEY_BASE64).toBe('');
   });
 
-  it('rejects empty keys and keys with the wrong decoded length', () => {
-    for (const key of ['', Buffer.alloc(31).toString('base64')]) {
+  it('rejects nonempty keys with the wrong decoded length', () => {
+    for (const key of ['not-base64', Buffer.alloc(31).toString('base64')]) {
       expect(() => readConfig({ ...env, BIOMETRIC_KEY_BASE64: key })).toThrow(
         'Must decode to 32 bytes',
       );
     }
   });
+
+  it.each(['DATABASE_URL', 'REDIS_URL', 'JWT_SECRET'])(
+    'still requires %s for auth startup',
+    (name) => {
+      expect(() =>
+        readConfig({ ...env, [name]: undefined, BIOMETRIC_KEY_BASE64: undefined }),
+      ).toThrow();
+    },
+  );
 });

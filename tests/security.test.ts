@@ -8,6 +8,7 @@ import {
 } from '../src/shared/security/crypto.js';
 import { similarity, facePolicy } from '../src/modules/face/face.policy.js';
 import { readConfig } from '../src/config/env.js';
+import { HttpFaceEngine } from '../src/modules/face/face.client.js';
 describe('biometric and device security', () => {
   const key = Buffer.alloc(32, 1).toString('base64');
   it('encrypts templates with authenticated user binding', () => {
@@ -43,5 +44,27 @@ describe('biometric and device security', () => {
       BIOMETRIC_KEY_BASE64: key,
     });
     expect(() => facePolicy(config)).toThrow('belum dikonfigurasi');
+  });
+  it('blocks biometrics without a key even when worker and thresholds are configured', async () => {
+    const config = readConfig({
+      DATABASE_URL: 'postgresql://test:test@localhost/db',
+      REDIS_URL: 'redis://localhost',
+      JWT_SECRET: 's'.repeat(40),
+      FACE_WORKER_TOKEN: 'w'.repeat(40),
+      FACE_MODEL_VERSION: 'fixture-model',
+      FACE_MATCH_THRESHOLD: '0.8',
+      FACE_REVIEW_THRESHOLD: '0.6',
+      FACE_LIVENESS_THRESHOLD: '0.9',
+      FACE_QUALITY_THRESHOLD: '0.7',
+    });
+    expect(() => facePolicy(config)).toThrow(
+      expect.objectContaining({ status: 503, code: 'FACE_NOT_CONFIGURED' }),
+    );
+    const engine = new HttpFaceEngine(config);
+    expect(await engine.ready()).toBe(false);
+    await expect(engine.observe(Buffer.from('fixture'), 'nonce')).rejects.toMatchObject({
+      status: 503,
+      code: 'FACE_NOT_CONFIGURED',
+    });
   });
 });

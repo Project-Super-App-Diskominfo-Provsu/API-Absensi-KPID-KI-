@@ -30,7 +30,7 @@ npm ci
 Copy-Item .env.example .env
 ```
 
-Isi `DATABASE_URL` dan `REDIS_URL` ke layanan yang sudah tersedia. Isi `JWT_SECRET`, `BIOMETRIC_KEY_BASE64`, dan `FACE_WORKER_TOKEN` dengan tiga nilai acak yang berbeda. Perintah berikut menghasilkan satu nilai setiap dijalankan:
+Isi `DATABASE_URL` dan `REDIS_URL` ke layanan yang sudah tersedia serta isi `JWT_SECRET`. Login dan administrasi dapat berjalan tanpa `BIOMETRIC_KEY_BASE64` dan `FACE_WORKER_TOKEN`. Untuk mengaktifkan biometrik, isi keduanya dengan nilai acak yang berbeda dari `JWT_SECRET`, lalu lengkapi konfigurasi model dan threshold. Key biometrik yang tidak ada atau kosong menonaktifkan enrollment dan absensi dengan respons `503 FACE_NOT_CONFIGURED`; key nonkosong yang tidak dapat didekode menjadi 32 byte tetap ditolak saat startup. Gunakan kembali key asli untuk membaca template yang sudah dienkripsi. Perintah berikut menghasilkan satu nilai setiap dijalankan:
 
 ```powershell
 node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"

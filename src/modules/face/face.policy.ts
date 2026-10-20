@@ -13,10 +13,15 @@ export function facePolicy(config: Config) {
     review === undefined ||
     liveness === undefined ||
     quality === undefined ||
+    !config.BIOMETRIC_KEY_BASE64 ||
     !config.FACE_MODEL_VERSION ||
     config.FACE_WORKER_TOKEN.length < 32
   ) {
-    fail(503, 'FACE_NOT_CONFIGURED', 'Model, kredensial, dan threshold wajah belum dikonfigurasi.');
+    fail(
+      503,
+      'FACE_NOT_CONFIGURED',
+      'Kunci enkripsi, model, kredensial, dan threshold wajah belum dikonfigurasi.',
+    );
   }
   return { match, review, liveness, quality, model_version: config.FACE_MODEL_VERSION };
 }

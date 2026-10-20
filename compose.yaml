@@ -12,7 +12,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in the deployment environment or .env}
       REDIS_URL: ${REDIS_URL:?Set REDIS_URL in the deployment environment or .env}
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in the deployment environment or .env}
-      BIOMETRIC_KEY_BASE64: ${BIOMETRIC_KEY_BASE64:?Set BIOMETRIC_KEY_BASE64 in the deployment environment or .env}
+      BIOMETRIC_KEY_BASE64: ${BIOMETRIC_KEY_BASE64:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-}
       TRUST_PROXY: ${TRUST_PROXY:-}
       SSO_ENABLED: ${SSO_ENABLED:-false}

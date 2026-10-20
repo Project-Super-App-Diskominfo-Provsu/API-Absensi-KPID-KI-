@@ -763,6 +763,83 @@ describe('internal login hardening', () => {
       ).body.error.code,
     ).toBe('SSO_NOT_CONFIGURED');
   });
+  it('keeps login, admin and auth readiness available without biometric secrets', async () => {
+    const authConfig = readConfig({
+      NODE_ENV: 'test',
+      DATABASE_URL: config.DATABASE_URL,
+      REDIS_URL: config.REDIS_URL,
+      JWT_SECRET: config.JWT_SECRET,
+      SSO_ENABLED: 'false',
+    });
+    const scoped = createApp(pool, redis, authConfig);
+    expect((await request(scoped).get('/health')).status).toBe(200);
+    expect((await request(scoped).get('/ready/auth')).status).toBe(200);
+    const readiness = await request(scoped).get('/ready');
+    expect(readiness.status).toBe(503);
+    expect(readiness.body.data).toMatchObject({
+      database: true,
+      redis: true,
+      face_worker: false,
+    });
+    const email = (await pool.query('SELECT email FROM users WHERE id=$1', [admin])).rows[0].email;
+    const session = await request(scoped)
+      .post('/api/v1/auth/login')
+      .send({ email, password: 'test-password-123' });
+    expect(session.status, session.text).toBe(200);
+    expect(
+      (
+        await request(scoped)
+          .get('/api/v1/admin/users')
+          .auth(session.body.data.access_token, { type: 'bearer' })
+      ).status,
+    ).toBe(200);
+  });
+  it('rejects enrollment and both attendance operations without the encryption key', async () => {
+    let observations = 0;
+    const scoped = createApp(
+      pool,
+      redis,
+      { ...config, BIOMETRIC_KEY_BASE64: '' },
+      {
+        ready: async () => true,
+        observe: async () => {
+          observations++;
+          return observation;
+        },
+      },
+    );
+    const enrollment = await request(scoped)
+      .post('/api/v1/face/enroll')
+      .auth(access, { type: 'bearer' })
+      .field('device_id', device)
+      .field('nonce', 'n'.repeat(40))
+      .field('signature', 's'.repeat(64))
+      .field('consent_version', 'test')
+      .field('consent', 'true')
+      .attach('images', image, 'selfie.png');
+    expect(enrollment.status, enrollment.text).toBe(503);
+    expect(enrollment.body.error.code).toBe('FACE_NOT_CONFIGURED');
+    for (const purpose of ['check-in', 'check-out']) {
+      const result = await request(scoped)
+        .post(`/api/v1/attendance/${purpose}`)
+        .auth(access, { type: 'bearer' })
+        .set('Idempotency-Key', randomUUID())
+        .field('device_id', device)
+        .field('nonce', 'n'.repeat(40))
+        .field('signature', 's'.repeat(64))
+        .field('latitude', '3.5')
+        .field('longitude', '98.6')
+        .field('accuracy_m', '5')
+        .field('captured_at', new Date().toISOString())
+        .field('is_mock', 'false')
+        .attach('image', image, 'selfie.png');
+      expect(result.status, result.text).toBe(503);
+      expect(result.body.error.code).toBe('FACE_NOT_CONFIGURED');
+    }
+    expect(observations).toBe(0);
+    expect((await pool.query('SELECT * FROM attendances')).rowCount).toBe(0);
+    expect((await pool.query('SELECT * FROM face_templates')).rowCount).toBe(1);
+  });
   it('requires HTTPS in production and trusts forwarded protocol only from configured proxies', async () => {
     const secured = createApp(pool, redis, { ...config, NODE_ENV: 'production' }, engine);
     const spoof = await request(secured)

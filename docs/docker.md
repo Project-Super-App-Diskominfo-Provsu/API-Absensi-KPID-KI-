@@ -22,7 +22,7 @@ API mengikat port host pada loopback saja: `127.0.0.1:3000` secara default. Pasa
 
 ## Environment runtime dan Dokploy
 
-Compose memetakan variabel aplikasi secara eksplisit dari environment proses Compose atau file `.env` ke container API. Empat variabel wajib (`DATABASE_URL`, `REDIS_URL`, `JWT_SECRET`, `BIOMETRIC_KEY_BASE64`) yang hilang atau kosong menghentikan Compose sebelum container dibuat. Environment proses Compose mempunyai prioritas atas `.env`; periksa apakah ada variabel shell lama yang menimpa nilai file.
+Compose memetakan variabel aplikasi secara eksplisit dari environment proses Compose atau file `.env` ke container API. Tiga variabel wajib (`DATABASE_URL`, `REDIS_URL`, `JWT_SECRET`) yang hilang atau kosong menghentikan Compose sebelum container dibuat. `BIOMETRIC_KEY_BASE64` yang hilang atau kosong tetap mengizinkan startup login/admin, tetapi enrollment dan absensi mengembalikan `503 FACE_NOT_CONFIGURED`. Key nonkosong tetap wajib dapat didekode menjadi 32 byte. Environment proses Compose mempunyai prioritas atas `.env`; periksa apakah ada variabel shell lama yang menimpa nilai file.
 
 Jika deployment menggunakan Dokploy dengan build type Dockerfile, isi variabel pada environment runtime aplikasi, simpan, lalu redeploy/recreate container. Build arguments saja tidak mengisi `process.env` aplikasi. File `.env` sengaja dikecualikan melalui `.dockerignore` dan tidak disalin ke image. Jika menggunakan deployment Compose, gunakan `compose.yaml` ini dan pastikan environment deployment tersedia untuk interpolasi Compose.
 
@@ -39,7 +39,7 @@ docker run -d --name absensi-api --env-file .env -p 127.0.0.1:3000:3000 absensi-
 
 Alamat database/Redis harus dapat dijangkau dari jaringan container. Jika keduanya berada di jaringan Docker privat, tambahkan `--network NAMA_JARINGAN` yang sama. Untuk hostname layanan pada Dokploy, gunakan jaringan tempat layanan tersebut terhubung.
 
-Error `expected string, received undefined` pada `BIOMETRIC_KEY_BASE64` berarti variabel tidak ada di environment proses Node. Ini berbeda dari key kosong atau key yang gagal didekode menjadi 32 byte. Baris komentar `# BIOMETRIC_KEY_BASE64=` tidak menimpa nilai aktif pada parser env standar. Hindari nama variabel aktif yang sama lebih dari sekali.
+Pada versi lama, error `expected string, received undefined` pada `BIOMETRIC_KEY_BASE64` menghentikan seluruh API ketika key tidak ada di environment proses Node. Sekarang key hilang atau kosong menonaktifkan operasi biometrik tanpa menghentikan login/admin. `/ready/auth` memeriksa database dan Redis; `/ready` tetap mengembalikan 503 jika konfigurasi biometrik atau worker belum siap. Baris komentar `# BIOMETRIC_KEY_BASE64=` tidak menimpa nilai aktif pada parser env standar. Hindari nama variabel aktif yang sama lebih dari sekali.
 
 Periksa hanya status variabel, tanpa mencetak nilainya:
 
@@ -67,7 +67,7 @@ Jangan mengganti key biometrik secara otomatis ketika variabel hilang: template 
 Untuk staging login saja, profil ini tidak perlu diaktifkan. API tetap menolak operasi wajah ketika worker belum tersedia. Untuk mengaktifkan biometrik:
 
 1. Siapkan direktori `models` berisi `manifest.json` dan bobot model yang sah. Path relatif pada manifest dihitung dari direktori manifest; misalnya `recognition.onnx` menunjuk `/app/models/recognition.onnx` di dalam container. Path absolut, jika digunakan, harus menunjuk lokasi di dalam container. Konfirmasikan izin baca untuk user non-root container.
-2. Isi `FACE_WORKER_TOKEN` pada `.env` serta versi dan threshold API dari hasil kalibrasi. Compose memasang direktori model read-only, menentukan manifest `/app/models/manifest.json`, dan menghubungkan API ke `http://face-worker:8000` pada jaringan Compose.
+2. Isi `BIOMETRIC_KEY_BASE64` dan `FACE_WORKER_TOKEN` pada `.env` serta versi dan threshold API dari hasil kalibrasi. Compose memasang direktori model read-only, menentukan manifest `/app/models/manifest.json`, dan menghubungkan API ke `http://face-worker:8000` pada jaringan Compose.
 3. Jalankan:
 
 ```powershell
