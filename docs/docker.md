@@ -6,7 +6,7 @@
 
 1. Salin `.env.example` menjadi `.env` jika belum ada. Isi secret serta alamat PostgreSQL/PostGIS dan Redis yang sudah tersedia. Jangan menimpa `.env` yang telah dikonfigurasi.
 2. Pastikan database dapat diakses dari mesin yang menjalankan migrasi dan dari jaringan Docker. Jika layanan berada pada host Docker, alamat dari dalam container adalah `host.docker.internal`, bukan `localhost`. Untuk layanan remote, gunakan hostname layanan. PostgreSQL perlu extension PostGIS dan kredensial migrasi yang dapat menyiapkannya; role runtime sebaiknya terpisah tanpa hak pemilik/superuser. Batasi akses database/Redis melalui jaringan privat dan autentikasi.
-3. Jalankan `npm ci` dan `npm run db:migrate` dari root source dengan `DATABASE_URL` yang dapat diakses dari host tersebut. Jalankan `npm run admin:create` untuk provisioning admin awal jika belum ada. Migrator tidak disertakan dalam image runtime.
+3. Image menyertakan migrator dan file SQL. Secara default Docker memakai `DB_MIGRATE_ON_START=true`: migrasi tertunda dijalankan sebelum HTTP server dibuka, termasuk inisialisasi database kosong. Role pada `DATABASE_URL` harus memiliki izin membuat/mengubah skema dan menyiapkan extension PostGIS. Untuk role runtime terbatas, jalankan migrasi secara terpisah menggunakan role migrasi melalui `npm run db:migrate:production` pada image, lalu set `DB_MIGRATE_ON_START=false` pada API. Alternatif dari source tetap tersedia melalui `npm ci` dan `npm run db:migrate`. Jalankan `npm run admin:create` dari source untuk provisioning admin awal jika belum ada.
 4. Pastikan port host 3000 belum dipakai proses API lokal. Bila masih dipakai, tentukan `API_HOST_PORT=3001` pada `.env`.
 5. Jalankan:
 
@@ -61,6 +61,16 @@ docker compose up -d --build --force-recreate --wait api
 ```
 
 Jangan mengganti key biometrik secara otomatis ketika variabel hilang: template wajah yang sudah dienkripsi memerlukan key lama agar dapat dibaca.
+
+## Migrasi saat startup
+
+`DB_MIGRATE_ON_START=true` adalah default image dan Compose. Startup dari source memakai default `false` agar alur migrasi manual tetap tersedia. Flag ini tidak membuat database PostgreSQL baru; database pada `DATABASE_URL` harus sudah ada dan dapat diakses. Server PostgreSQL wajib menyediakan PostGIS; image API tidak memasang extension pada sistem operasi server database.
+
+Migrator memakai advisory lock PostgreSQL yang sama untuk semua replica dan CLI, ledger `schema_migrations`, serta checksum SHA-256. File yang sudah diterapkan dilewati. Seluruh migrasi tertunda dan perubahan ledger dijalankan dalam satu transaksi; kegagalan membatalkan transaksi dan menghentikan startup. Restart tidak menghapus data atau mengulang seed. Jangan mengubah SQL yang sudah diterapkan.
+
+Database yang sudah berisi tabel aplikasi tetapi tidak memiliki ledger tidak diadopsi otomatis: konflik tabel menghentikan migrasi dan transaksi dibatalkan. Periksa riwayat skema sebelum menentukan baseline; jangan menghapus tabel atau menandai migrasi sebagai selesai tanpa verifikasi. Perubahan skema yang sudah berhasil di-commit tidak dibatalkan oleh rollback image Docker. Untuk rollback skema, gunakan migrasi koreksi yang telah ditinjau atau pemulihan backup.
+
+Jika mode otomatis dimatikan dan skema belum tersedia, startup mencatat instruksi untuk menjalankan `db:migrate:production` atau mengaktifkan flag tersebut. Pada Dokploy Application Dockerfile, default flag berasal dari image, sehingga tidak perlu bergantung pada Compose untuk menjalankan inisialisasi database.
 
 ## Worker wajah opsional
 

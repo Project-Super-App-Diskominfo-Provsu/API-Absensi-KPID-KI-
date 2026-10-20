@@ -14,6 +14,12 @@ describe('runtime environment', () => {
     expect(readConfig(env).BIOMETRIC_KEY_BASE64).toBe(env.BIOMETRIC_KEY_BASE64);
   });
 
+  it('keeps source startup migrations opt-in', () => {
+    expect(readConfig(env).DB_MIGRATE_ON_START).toBe('false');
+    expect(readConfig({ ...env, DB_MIGRATE_ON_START: 'true' }).DB_MIGRATE_ON_START).toBe('true');
+    expect(() => readConfig({ ...env, DB_MIGRATE_ON_START: 'yes' })).toThrow();
+  });
+
   it.each([undefined, ''])('allows auth startup with biometric key %s', (key) => {
     expect(readConfig({ ...env, BIOMETRIC_KEY_BASE64: key }).BIOMETRIC_KEY_BASE64).toBe('');
   });

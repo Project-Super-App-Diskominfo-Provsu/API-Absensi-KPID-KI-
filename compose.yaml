@@ -10,6 +10,7 @@ services:
       NODE_ENV: production
       PORT: "3000"
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in the deployment environment or .env}
+      DB_MIGRATE_ON_START: ${DB_MIGRATE_ON_START:-true}
       REDIS_URL: ${REDIS_URL:?Set REDIS_URL in the deployment environment or .env}
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in the deployment environment or .env}
       BIOMETRIC_KEY_BASE64: ${BIOMETRIC_KEY_BASE64:-}

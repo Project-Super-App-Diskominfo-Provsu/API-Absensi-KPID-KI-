@@ -14,6 +14,7 @@
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "db:migrate": "tsx --env-file=.env scripts/migrate.ts",
+    "db:migrate:production": "node --env-file-if-exists=.env dist/database/migrate-cli.js",
     "admin:create": "tsx --env-file=.env scripts/create-admin.ts",
     "worker:dev": "tsx --env-file=.env src/worker/server.ts",
     "worker:start": "node --env-file-if-exists=.env dist/worker/server.js",

@@ -1,0 +1,116 @@
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { Pool } from 'pg';
+import { createPool } from '../src/database/client.js';
+import { migrateDatabase } from '../src/database/migrate.js';
+
+const adminUrl =
+  process.env.TEST_DATABASE_URL ??
+  'postgresql://absensi:local-development-only@localhost:55432/absensi';
+const admin = new Pool({ connectionString: adminUrl });
+let databaseName: string;
+let pool: Pool;
+let fixtureDirectory: string | undefined;
+
+beforeEach(async () => {
+  databaseName = `absensi_migration_${randomUUID().replaceAll('-', '')}`;
+  await admin.query(`CREATE DATABASE ${databaseName}`);
+  const url = new URL(adminUrl);
+  url.pathname = `/${databaseName}`;
+  pool = createPool(url.toString());
+});
+
+afterEach(async () => {
+  await pool?.end();
+  await admin.query(`DROP DATABASE IF EXISTS ${databaseName} WITH (FORCE)`);
+  if (fixtureDirectory) {
+    await rm(fixtureDirectory, { recursive: true, force: true });
+    fixtureDirectory = undefined;
+  }
+});
+afterAll(async () => {
+  await admin.end();
+});
+
+describe('database migrations', () => {
+  it('initializes an empty database with the complete auth schema and ledger', async () => {
+    expect(await migrateDatabase(pool)).toEqual(['001_initial.sql', '002_sso.sql']);
+    expect((await pool.query('SELECT name,checksum FROM schema_migrations')).rowCount).toBe(2);
+    await expect(
+      pool.query(
+        'SELECT u.auth_mode,s.expires_at FROM users u LEFT JOIN refresh_sessions s ON false LIMIT 0',
+      ),
+    ).resolves.toBeDefined();
+    expect((await pool.query('SELECT * FROM offices')).rowCount).toBe(3);
+  });
+
+  it('skips applied migrations on restart and preserves existing data', async () => {
+    await migrateDatabase(pool);
+    const id = (await pool.query("INSERT INTO units(name) VALUES ('Existing unit') RETURNING id"))
+      .rows[0].id;
+    const ledger = (await pool.query('SELECT * FROM schema_migrations ORDER BY name')).rows;
+    expect(await migrateDatabase(pool)).toEqual([]);
+    expect(
+      (await pool.query('SELECT id FROM units WHERE name=$1', ['Existing unit'])).rows[0].id,
+    ).toBe(id);
+    expect((await pool.query('SELECT * FROM schema_migrations ORDER BY name')).rows).toEqual(
+      ledger,
+    );
+  });
+
+  it('serializes simultaneous migrations from multiple replicas', async () => {
+    const results = await Promise.all([migrateDatabase(pool), migrateDatabase(pool)]);
+    expect(results.map((names) => names.length).sort()).toEqual([0, 2]);
+    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(2);
+    expect((await pool.query('SELECT * FROM offices')).rowCount).toBe(3);
+  });
+
+  it('rejects changed checksums without changing existing application data', async () => {
+    await migrateDatabase(pool);
+    await pool.query("INSERT INTO units(name) VALUES ('Preserved unit')");
+    await pool.query(
+      "UPDATE schema_migrations SET checksum='tampered' WHERE name='001_initial.sql'",
+    );
+    await expect(migrateDatabase(pool)).rejects.toThrow(
+      'Applied migration changed: 001_initial.sql',
+    );
+    expect((await pool.query("SELECT * FROM units WHERE name='Preserved unit'")).rowCount).toBe(1);
+    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(2);
+  });
+
+  it('rolls back all pending schema changes and the ledger if any SQL fails', async () => {
+    fixtureDirectory = await mkdtemp(join(tmpdir(), 'absensi-migration-failure-'));
+    await writeFile(
+      join(fixtureDirectory, '001_create.sql'),
+      'CREATE TABLE partial_change(id int);',
+    );
+    await writeFile(join(fixtureDirectory, '002_fail.sql'), 'SELECT * FROM missing_test_relation;');
+    await expect(
+      migrateDatabase(pool, pathToFileURL(fixtureDirectory + '/')),
+    ).rejects.toMatchObject({
+      code: '42P01',
+    });
+    const row = (
+      await pool.query(
+        "SELECT to_regclass('partial_change') AS partial, to_regclass('schema_migrations') AS ledger",
+      )
+    ).rows[0];
+    expect(row).toEqual({ partial: null, ledger: null });
+  });
+
+  it('does not silently adopt or overwrite an existing schema without a ledger', async () => {
+    await pool.query('CREATE TABLE users(id int PRIMARY KEY, preserved text)');
+    await pool.query("INSERT INTO users VALUES (1,'existing data')");
+    await expect(migrateDatabase(pool)).rejects.toMatchObject({ code: '42P07' });
+    expect((await pool.query('SELECT * FROM users')).rows).toEqual([
+      { id: 1, preserved: 'existing data' },
+    ]);
+    expect(
+      (await pool.query("SELECT to_regclass('schema_migrations') AS ledger")).rows[0].ledger,
+    ).toBeNull();
+  });
+});

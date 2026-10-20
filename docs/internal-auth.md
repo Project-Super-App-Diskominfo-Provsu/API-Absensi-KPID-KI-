@@ -45,7 +45,7 @@ Kuota login dan refresh terpisah agar pegawai pada jaringan kantor yang sama tet
 2. Isi `JWT_SECRET` dengan secret acak sesuai `.env.example`. Untuk staging khusus login/admin, `BIOMETRIC_KEY_BASE64` dan `FACE_WORKER_TOKEN` boleh belum diisi. Operasi enrollment dan absensi mengembalikan `503 FACE_NOT_CONFIGURED` sampai key, worker, model, dan threshold lengkap. Untuk mengaktifkan biometrik, gunakan secret berbeda untuk ketiga variabel tersebut; template yang sudah terenkripsi tetap membutuhkan key asli. Jangan commit `.env`, memakai secret contoh, atau membagikannya di chat.
 3. Tetapkan `NODE_ENV=production`, `SSO_ENABLED=false`, dan daftar origin web yang diizinkan pada `CORS_ORIGINS` bila digunakan. CORS bukan pengganti autentikasi Android.
 4. Pasang reverse proxy dengan HTTPS. Isi `TRUST_PROXY` hanya dengan alamat IP/CIDR proxy sebenarnya, dipisahkan koma. Jangan mempercayai semua alamat. Proxy harus menimpa header forwarded dari klien, terutama `X-Forwarded-For` dan `X-Forwarded-Proto`, dan akses langsung publik ke port API harus dibatasi.
-5. Jalankan migrasi dari source deployment dengan koneksi database staging, lalu buat admin awal melalui `npm run admin:create`. Jangan simpan `ADMIN_PASSWORD` setelah provisioning. Build dengan `npm run build` dan jalankan proses dengan secret environment yang benar. `npm start` membaca `.env` jika tersedia; container menerima environment runtime dan membaca `/app/.env` jika file tersebut dipasang.
+5. Startup Docker menjalankan migrasi tertunda secara default (`DB_MIGRATE_ON_START=true`). Untuk role runtime terbatas, jalankan migrasi terpisah menggunakan role migrasi, kemudian set flag tersebut ke `false`. Startup dari source tetap memerlukan `npm run db:migrate` secara default. Buat admin awal melalui `npm run admin:create`; jangan simpan `ADMIN_PASSWORD` setelah provisioning. Build dengan `npm run build` dan jalankan proses dengan secret environment yang benar. `npm start` membaca `.env` jika tersedia; container menerima environment runtime dan membaca `/app/.env` jika file tersebut dipasang.
 6. Periksa `/health` untuk proses hidup dan `/ready/auth` untuk PostgreSQL beserta kolom autentikasi serta Redis. Endpoint kesehatan ini dapat dipanggil melalui HTTP pada jaringan privat. Request bisnis dengan `NODE_ENV=production` wajib terdeteksi sebagai HTTPS; header HTTPS dari proxy tak tepercaya ditolak.
 7. Uji login HTTPS, profil, refresh, logout, logout-all, perubahan password, dan penolakan token lama dari Android staging. Hindari mencatat request body login atau Authorization pada proxy/platform pemantauan.
 
@@ -55,7 +55,7 @@ Keputusan autentikasi mengacu pada [OWASP Authentication Cheat Sheet](https://ch
 
 ## Migrasi: padanan Laravel
 
-Express mengatur HTTP dan tidak menyediakan migrasi bawaan. Proyek ini memakai migrator SQL sendiri melalui `scripts/migrate.ts`, bukan Artisan atau ORM.
+Express mengatur HTTP dan tidak menyediakan migrasi bawaan. Proyek ini memakai migrator SQL sendiri pada `src/database/migrate.ts`, digunakan bersama oleh startup Docker dan CLI `scripts/migrate.ts`. Image produksi menyediakan CLI terkompilasi melalui `npm run db:migrate:production`; tidak membutuhkan `tsx` atau dependency development.
 
 | Laravel | Proyek ini |
 | --- | --- |

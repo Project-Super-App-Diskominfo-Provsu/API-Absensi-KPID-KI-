@@ -8,10 +8,11 @@ COPY src ./src
 COPY scripts/build.mjs ./scripts/build.mjs
 RUN npm run build && npm prune --omit=dev --no-audit --no-fund
 FROM node:24-bookworm-slim
-ENV NODE_ENV=production
+ENV NODE_ENV=production DB_MIGRATE_ON_START=true
 WORKDIR /app
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
+COPY --chown=node:node migrations ./migrations
 COPY package.json ./
 USER node
 EXPOSE 3000
