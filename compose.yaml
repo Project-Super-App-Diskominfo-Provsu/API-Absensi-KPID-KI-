@@ -1,28 +1,26 @@
 name: absensi-kpid-ki
 services:
-  postgres:
-    image: postgis/postgis:17-3.5
+  api:
+    image: absensi-api:${APP_IMAGE_TAG:-local}
+    build:
+      context: .
+    init: true
+    restart: unless-stopped
+    env_file: .env
     environment:
-      POSTGRES_DB: absensi
-      POSTGRES_USER: absensi
-      POSTGRES_PASSWORD: ${LOCAL_DB_PASSWORD:-local-development-only}
-    ports: ["127.0.0.1:55432:5432"]
-    volumes: ["postgres_data:/var/lib/postgresql/data"]
+      NODE_ENV: production
+      PORT: "3000"
+      FACE_WORKER_URL: http://face-worker:8000
+    ports: ["127.0.0.1:${API_HOST_PORT:-3000}:3000"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    read_only: true
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    stop_grace_period: 20s
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U absensi -d absensi"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-  redis:
-    image: redis:7-alpine
-    ports: ["127.0.0.1:56379:6379"]
-    command: ["redis-server", "--appendonly", "yes"]
-    volumes: ["redis_data:/data"]
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-volumes:
-  postgres_data:
-  redis_data:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/ready/auth').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
