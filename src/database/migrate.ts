@@ -3,6 +3,14 @@ import { createHash } from 'node:crypto';
 import type { Pool } from 'pg';
 import { transaction } from './client.js';
 
+export class SchemaVerificationError extends Error {
+  constructor(public readonly migration: string) {
+    super(
+      `Missing or changed migration: ${migration}. Run npm run db:migrate or npm run db:migrate:production.`,
+    );
+  }
+}
+
 async function readMigrations(directory: URL) {
   const names = (await readdir(directory)).filter((name) => name.endsWith('.sql')).sort();
   if (!names.length) throw new Error('No SQL migrations found. Include migrations in the image.');
@@ -37,8 +45,7 @@ export async function verifyDatabaseSchema(
   );
   const applied = new Map(rows.map((row) => [row.name, row.checksum]));
   for (const { name, checksum } of migrationPlan(migrations, applied)) {
-    if (applied.get(name) !== checksum)
-      throw new Error(`Missing or changed migration: ${name}. Run db:migrate:production.`);
+    if (applied.get(name) !== checksum) throw new SchemaVerificationError(name);
   }
 }
 
@@ -67,7 +74,12 @@ export async function migrateDatabase(
           throw new Error(`Applied migration changed: ${name}`);
         continue;
       }
-      await db.query(sql);
+      try {
+        await db.query(sql);
+      } catch (error) {
+        if (error instanceof Error) Object.assign(error, { migration: name });
+        throw error;
+      }
       await db.query('INSERT INTO schema_migrations(name,checksum) VALUES ($1,$2)', [
         name,
         checksum,

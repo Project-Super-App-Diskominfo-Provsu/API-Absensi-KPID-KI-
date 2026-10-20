@@ -14,6 +14,8 @@ import { attendancePayload } from '../src/modules/attendance/attendance.service.
 import { attendanceInput } from '../src/modules/attendance/attendance.schema.js';
 import type { FaceEngine } from '../src/modules/face/face.types.js';
 import { issueSession, logoutUser } from '../src/modules/auth/auth.service.js';
+import { createServer } from 'node:http';
+import { spawn } from 'node:child_process';
 
 const databaseName = `absensi_test_${randomUUID().replaceAll('-', '')}`;
 const adminUrl =
@@ -627,6 +629,53 @@ describe('device and enrollment approvals', () => {
 });
 
 describe('internal login hardening', () => {
+  it('reports an occupied HTTP port without logging a successful startup', async () => {
+    const occupied = createServer();
+    await new Promise<void>((resolve) => occupied.listen(0, resolve));
+    const port = (occupied.address() as import('node:net').AddressInfo).port;
+    const child = spawn(process.execPath, ['--import', 'tsx', 'src/server.ts'], {
+      env: {
+        ...process.env,
+        ...Object.fromEntries(
+          Object.entries(config)
+            .filter(([, value]) => value !== undefined)
+            .map(([key, value]) => [key, String(value)]),
+        ),
+        PORT: String(port),
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let output = '';
+    child.stdout.on('data', (data: Buffer) => {
+      output += data.toString();
+    });
+    child.stderr.on('data', (data: Buffer) => {
+      output += data.toString();
+    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const code = await Promise.race([
+        new Promise<number | null>((resolve, reject) => {
+          child.on('close', resolve);
+          child.on('error', reject);
+        }),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error('Server did not exit on port conflict: ' + output)),
+            8000,
+          );
+        }),
+      ]);
+      expect(code).toBe(1);
+      expect(output).toContain('EADDRINUSE');
+      expect(output).not.toContain('Absensi API started');
+      expect(output).not.toContain(config.JWT_SECRET);
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (child.exitCode === null) child.kill();
+      await new Promise<void>((resolve) => occupied.close(() => resolve()));
+    }
+  });
   it('returns the same login failure for unknown, disabled, SSO-only and wrong-password accounts', async () => {
     const email = (await pool.query('SELECT email FROM users WHERE id=$1', [user])).rows[0].email;
     const call = (email: string) =>

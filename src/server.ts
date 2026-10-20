@@ -2,8 +2,13 @@ import { createRedisClient } from './database/redis.js';
 import { pino } from 'pino';
 import { readConfig } from './config/env.js';
 import { createPool } from './database/client.js';
-import { migrateDatabase, verifyDatabaseSchema } from './database/migrate.js';
+import {
+  migrateDatabase,
+  verifyDatabaseSchema,
+  SchemaVerificationError,
+} from './database/migrate.js';
 import { createApp } from './app.js';
+import { createServer } from 'node:http';
 const logger = pino();
 const config = readConfig();
 if (!config.BIOMETRIC_KEY_BASE64) {
@@ -25,10 +30,12 @@ try {
     {
       code: (error as { code?: string })?.code,
       error_type: error?.constructor?.name,
+      migration: (error as { migration?: string })?.migration,
+      ...(error instanceof SchemaVerificationError ? { detail: error.message } : {}),
     },
     config.DB_MIGRATE_ON_START === 'true'
-      ? 'Database migration failed. Check migration checksums, PostgreSQL availability and database role permissions. Changes in the failed migration transaction were rolled back.'
-      : 'Database schema is unavailable. Run db:migrate:production or enable DB_MIGRATE_ON_START=true.',
+      ? 'Database migration failed. Check the reported migration, checksums and database permissions. PostgreSQL must have PostGIS packages installed for migration 004. Changes were rolled back.'
+      : 'Database schema is unavailable. Run npm run db:migrate locally or npm run db:migrate:production in the image.',
   );
   await pool.end();
   process.exit(1);
@@ -43,13 +50,18 @@ try {
   await pool.end();
   process.exit(1);
 }
-const server = createApp(pool, redis, config).listen(config.PORT, () =>
-  logger.info({ port: config.PORT }, 'Absensi API started'),
-);
-server.on('error', () => {
-  logger.fatal('HTTP listener failed. Check PORT and existing listeners.');
+const server = createServer(createApp(pool, redis, config));
+server.on('listening', () => logger.info({ port: config.PORT }, 'Absensi API started'));
+server.on('error', (error: NodeJS.ErrnoException) => {
+  logger.fatal(
+    { code: error.code, port: config.PORT },
+    error.code === 'EADDRINUSE'
+      ? 'HTTP port is already in use. Stop the existing API process or choose another PORT.'
+      : 'HTTP listener failed. Check PORT and listener permissions.',
+  );
   void Promise.allSettled([pool.end(), redis.close()]).then(() => process.exit(1));
 });
+server.listen(config.PORT);
 server.requestTimeout = 30000;
 server.headersTimeout = 10000;
 let stopping = false;
