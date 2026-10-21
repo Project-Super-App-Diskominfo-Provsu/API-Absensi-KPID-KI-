@@ -1,13 +1,14 @@
-# Optional image for external PostgreSQL hosts that need PostGIS packages.
-# Match the existing PostgreSQL major version before attaching existing data.
 ARG POSTGRES_MAJOR=17
 FROM docker.io/library/postgres:${POSTGRES_MAJOR}-bookworm
 
-# The API migrator enables the extension in the application database.
-# No entrypoint, database credentials, PGDATA, or existing data are changed here.
+# Install PostGIS 3 packages matching PostgreSQL major version
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        "postgresql-${PG_MAJOR}-postgis-3" \
        "postgresql-${PG_MAJOR}-postgis-3-scripts" \
     && test -r "/usr/share/postgresql/${PG_MAJOR}/extension/postgis.control" \
     && rm -rf /var/lib/apt/lists/*
+
+# Copy initialization script to enable PostGIS on container startup if fresh database
+COPY scripts/init-postgis.sh /docker-entrypoint-initdb.d/10_postgis.sh
+RUN chmod +x /docker-entrypoint-initdb.d/10_postgis.sh
