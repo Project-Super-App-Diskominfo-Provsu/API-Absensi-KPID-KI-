@@ -30,6 +30,7 @@ export function snapshotOfficeModel(office: Office) {
     name: office.name,
     latitude: office.latitude,
     longitude: office.longitude,
+    polygon: office.polygon,
     radius_m: office.radius_m,
     max_gps_accuracy_m: office.max_gps_accuracy_m,
     max_location_age_s: office.max_location_age_s,

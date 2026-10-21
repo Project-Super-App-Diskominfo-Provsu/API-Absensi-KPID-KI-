@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
+import { setTimeout } from 'node:timers/promises';
 import { copyFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -26,7 +27,15 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await pool?.end();
-  await admin.query(`DROP DATABASE IF EXISTS ${databaseName} WITH (FORCE)`);
+  // pg-pool can resolve end() before PostgreSQL finishes closing the sockets.
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const sessions = await admin.query('SELECT 1 FROM pg_stat_activity WHERE datname=$1', [
+      databaseName,
+    ]);
+    if (!sessions.rowCount) break;
+    await setTimeout(20);
+  }
+  await admin.query(`DROP DATABASE IF EXISTS ${databaseName}`);
   if (fixtureDirectory) {
     await rm(fixtureDirectory, { recursive: true, force: true });
     fixtureDirectory = undefined;
@@ -53,13 +62,19 @@ describe('database migrations', () => {
     expect((await pool.query("SELECT 1 FROM pg_extension WHERE extname='postgis'")).rowCount).toBe(
       0,
     );
-    expect(await migrateDatabase(pool)).toEqual(['004_postgis_geofencing.sql']);
-    expect((await pool.query('SELECT * FROM offices ORDER BY id')).rows).toEqual(offices);
+    expect(await migrateDatabase(pool)).toEqual([
+      '004_postgis_geofencing.sql',
+      '005_office_polygon.sql',
+      '006_office_geofence_policy.sql',
+    ]);
+    const afterOffices = (await pool.query('SELECT * FROM offices ORDER BY id')).rows;
+    expect(afterOffices.map(({ polygon, address, ...rest }) => rest)).toEqual(offices);
+    expect(afterOffices.every((row) => row.polygon !== null)).toBe(true);
     expect((await pool.query("SELECT * FROM units WHERE name='preserved'")).rowCount).toBe(1);
     expect(
       (
         await pool.query(
-          "SELECT * FROM schema_migrations WHERE name <> '004_postgis_geofencing.sql' ORDER BY name",
+          "SELECT * FROM schema_migrations WHERE name NOT IN ('004_postgis_geofencing.sql', '005_office_polygon.sql', '006_office_geofence_policy.sql') ORDER BY name",
         )
       ).rows,
     ).toEqual(ledger);
@@ -122,8 +137,10 @@ describe('database migrations', () => {
       '002_sso.sql',
       '003_office_coordinates.sql',
       '004_postgis_geofencing.sql',
+      '005_office_polygon.sql',
+      '006_office_geofence_policy.sql',
     ]);
-    expect((await pool.query('SELECT name,checksum FROM schema_migrations')).rowCount).toBe(4);
+    expect((await pool.query('SELECT name,checksum FROM schema_migrations')).rowCount).toBe(6);
     await expect(
       pool.query(
         'SELECT u.auth_mode,s.expires_at FROM users u LEFT JOIN refresh_sessions s ON false LIMIT 0',
@@ -148,8 +165,8 @@ describe('database migrations', () => {
 
   it('serializes simultaneous migrations from multiple replicas', async () => {
     const results = await Promise.all([migrateDatabase(pool), migrateDatabase(pool)]);
-    expect(results.map((names) => names.length).sort()).toEqual([0, 4]);
-    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(4);
+    expect(results.map((names) => names.length).sort()).toEqual([0, 6]);
+    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(6);
     expect((await pool.query('SELECT * FROM offices')).rowCount).toBe(3);
   });
 
@@ -163,7 +180,7 @@ describe('database migrations', () => {
       'Applied migration changed: 001_initial_postgres.sql',
     );
     expect((await pool.query("SELECT * FROM units WHERE name='Preserved unit'")).rowCount).toBe(1);
-    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(4);
+    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(6);
   });
 
   it('rolls back all pending schema changes and the ledger if any SQL fails', async () => {

@@ -10,11 +10,14 @@ import {
   findAllOffices,
   findOfficeByIdForUpdate,
   updateOfficeData,
+  polygonToWkt,
+  isValidOfficePolygon,
   type LocationInput,
   type Office,
+  type OfficePolygonInput,
 } from './office.model.js';
 
-export type { LocationInput, Office };
+export type { LocationInput, Office, OfficePolygonInput };
 
 export async function selectOffice(
   db: Db,
@@ -42,9 +45,11 @@ export async function selectOffice(
   if (!locations.rowCount)
     fail(409, 'OFFICE_UNAVAILABLE', 'Lokasi absensi belum siap atau tidak aktif.');
 
-  const inside: Office[] = locations.rows.filter((office) => office.within_radius);
+  const inside: Office[] = locations.rows.filter(
+    (office) => office.within_polygon && office.within_radius,
+  );
   if (!inside.length)
-    fail(422, 'GEOFENCE_OUT_OF_RANGE', 'Posisi di luar radius 50 meter lokasi yang diizinkan.');
+    fail(422, 'GEOFENCE_OUT_OF_RANGE', 'Posisi di luar area kantor yang diizinkan.');
 
   const accurate = inside.filter((o) => input.accuracy_m <= o.max_gps_accuracy_m);
   if (!accurate.length)
@@ -79,6 +84,7 @@ export async function updateOffice(
     name?: string;
     latitude?: number;
     longitude?: number;
+    polygon?: OfficePolygonInput;
     radius_m?: number;
     max_gps_accuracy_m?: number;
     max_location_age_s?: number;
@@ -89,18 +95,25 @@ export async function updateOffice(
     const old = await findOfficeByIdForUpdate(db, officeId);
     if (!old.rowCount) fail(404, 'NOT_FOUND', 'Lokasi tidak ditemukan.');
 
+    const polygonWkt = input.polygon ? polygonToWkt(input.polygon) : null;
+    if (polygonWkt && !(await isValidOfficePolygon(db, polygonWkt)))
+      fail(400, 'POLYGON_INVALID', 'Polygon harus valid, tidak kosong, dan tidak menyilang.');
     const merged = { ...old.rows[0], ...input };
-    if (
-      merged.active &&
-      (merged.latitude === null ||
-        merged.longitude === null ||
-        !merged.max_gps_accuracy_m ||
-        !merged.max_location_age_s)
-    ) {
+    const regeneratePolygon = input.latitude !== undefined || !old.rows[0]!.polygon;
+
+    if (merged.active && (merged.latitude === null || merged.longitude === null)) {
       fail(
         400,
         'OFFICE_NOT_CONFIGURED',
-        'Koordinat dan kebijakan GPS wajib diisi sebelum aktivasi.',
+        'Area poligon atau koordinat dan kebijakan GPS wajib diisi sebelum aktivasi.',
+      );
+    }
+
+    if (merged.active && (!merged.max_gps_accuracy_m || !merged.max_location_age_s)) {
+      fail(
+        400,
+        'OFFICE_NOT_CONFIGURED',
+        'Kebijakan GPS (akurasi dan usia lokasi) wajib diisi sebelum aktivasi.',
       );
     }
 
@@ -112,14 +125,18 @@ export async function updateOffice(
       name: merged.name,
       latitude: merged.latitude,
       longitude: merged.longitude,
+      polygonWkt,
+      regeneratePolygon,
+      radius_m: merged.radius_m,
       max_gps_accuracy_m: merged.max_gps_accuracy_m,
       max_location_age_s: merged.max_location_age_s,
       active: merged.active,
     });
 
+    const saved = await findOfficeByIdForUpdate(db, officeId);
     await audit(db, actorId, 'OFFICE_UPDATED', officeId, {
       before: old.rows[0]!,
-      after: merged,
+      after: saved.rows[0]!,
     });
 
     return updated.rows[0]!;

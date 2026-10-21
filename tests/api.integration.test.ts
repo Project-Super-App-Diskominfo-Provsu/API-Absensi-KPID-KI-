@@ -134,7 +134,7 @@ beforeEach(async () => {
   // Only the randomly created test database is reset. Existing databases and Redis keys are preserved.
   await pool.query('TRUNCATE users CASCADE');
   await pool.query(`UPDATE offices SET latitude=3.5,longitude=CASE code WHEN 'DISKOMINFO_PROVSU' THEN 98.6 WHEN 'KPID_SUMUT' THEN 98.61 ELSE 98.62 END,
-    max_gps_accuracy_m=15,max_location_age_s=30,active=true`);
+    max_gps_accuracy_m=15,max_location_age_s=30,active=true,polygon=ST_Buffer(ST_SetSRID(ST_MakePoint(CASE code WHEN 'DISKOMINFO_PROVSU' THEN 98.6 WHEN 'KPID_SUMUT' THEN 98.61 ELSE 98.62 END,3.5),4326)::geography,50,'quad_segs=64')::geometry`);
   offices = Object.fromEntries(
     (await pool.query('SELECT id,code FROM offices')).rows.map((o) => [o.code, o.id]),
   );
@@ -223,6 +223,119 @@ describe('live database location rules', () => {
         else await expect(result).rejects.toMatchObject({ code: 'GEOFENCE_OUT_OF_RANGE' });
       }
     }
+  });
+  it('enforces custom polygon geofencing boundaries', async () => {
+    const poly = [
+      { latitude: 3.58, longitude: 98.67 },
+      { latitude: 3.59, longitude: 98.67 },
+      { latitude: 3.59, longitude: 98.68 },
+      { latitude: 3.58, longitude: 98.68 },
+    ];
+    await request(app)
+      .patch(`/api/v1/admin/offices/${offices.DISKOMINFO_PROVSU}`)
+      .auth(adminAccess, { type: 'bearer' })
+      .send({ polygon: poly, latitude: 3.585, longitude: 98.675 });
+
+    const inside = await selectOffice(
+      pool,
+      'KPID',
+      {
+        latitude: 3.585,
+        longitude: 98.675,
+        accuracy_m: 5,
+        captured_at: new Date().toISOString(),
+        office_id: offices.DISKOMINFO_PROVSU,
+      },
+      new Date(),
+    );
+    expect(inside.distance_m).toBe(0);
+
+    await expect(
+      selectOffice(
+        pool,
+        'KPID',
+        {
+          latitude: 3.57,
+          longitude: 98.675,
+          accuracy_m: 5,
+          captured_at: new Date().toISOString(),
+          office_id: offices.DISKOMINFO_PROVSU,
+        },
+        new Date(),
+      ),
+    ).rejects.toMatchObject({ code: 'GEOFENCE_OUT_OF_RANGE' });
+  });
+  it('generates a valid 50m polygon from the configured office center', async () => {
+    const updated = await request(app)
+      .patch(`/api/v1/admin/offices/${offices.KPID_SUMUT}`)
+      .auth(adminAccess, { type: 'bearer' })
+      .send({ latitude: 3.51, longitude: 98.63, radius_m: 50 });
+    expect(updated.status, updated.text).toBe(200);
+    const office = (
+      await pool.query(
+        'SELECT ST_IsValid(polygon) AS valid,ST_Covers(polygon,ST_SetSRID(ST_MakePoint(longitude,latitude),4326)) AS covers_center,radius_m FROM offices WHERE id=$1',
+        [offices.KPID_SUMUT],
+      )
+    ).rows[0];
+    expect(office).toEqual({ valid: true, covers_center: true, radius_m: 50 });
+    const rejected = await request(app)
+      .patch(`/api/v1/admin/offices/${offices.KPID_SUMUT}`)
+      .auth(adminAccess, { type: 'bearer' })
+      .send({ radius_m: 500 });
+    expect(rejected.status).toBe(400);
+  });
+  it('preserves excluded GeoJSON interiors and rejects self-intersecting polygons', async () => {
+    const polygon = {
+      type: 'Polygon',
+      coordinates: [
+        [
+          [98.5998, 3.4998],
+          [98.6002, 3.4998],
+          [98.6002, 3.5002],
+          [98.5998, 3.5002],
+          [98.5998, 3.4998],
+        ],
+        [
+          [98.59995, 3.49995],
+          [98.59995, 3.50005],
+          [98.60005, 3.50005],
+          [98.60005, 3.49995],
+          [98.59995, 3.49995],
+        ],
+      ],
+    };
+    const updated = await request(app)
+      .patch(`/api/v1/admin/offices/${offices.DISKOMINFO_PROVSU}`)
+      .auth(adminAccess, { type: 'bearer' })
+      .send({ polygon });
+    expect(updated.status, updated.text).toBe(200);
+    await expect(
+      selectOffice(
+        pool,
+        'KPID',
+        {
+          latitude: 3.5,
+          longitude: 98.6,
+          accuracy_m: 5,
+          captured_at: new Date().toISOString(),
+          office_id: offices.DISKOMINFO_PROVSU,
+        },
+        new Date(),
+      ),
+    ).rejects.toMatchObject({ code: 'GEOFENCE_OUT_OF_RANGE' });
+    const invalid = await request(app)
+      .patch(`/api/v1/admin/offices/${offices.DISKOMINFO_PROVSU}`)
+      .auth(adminAccess, { type: 'bearer' })
+      .send({
+        polygon: [
+          { latitude: 3.4998, longitude: 98.5998 },
+          { latitude: 3.5002, longitude: 98.6002 },
+          { latitude: 3.5002, longitude: 98.5998 },
+          { latitude: 3.4998, longitude: 98.6002 },
+        ],
+      });
+    expect(invalid.status).toBe(400);
+    expect(invalid.body.error.code).toBe('POLYGON_INVALID');
   });
   it('rejects inaccurate, stale, inactive and uncategorized locations', async () => {
     const base = {
@@ -448,18 +561,36 @@ describe('API security and attendance', () => {
       .send({ active: true });
     expect(result.body.error.code).toBe('OFFICE_NOT_CONFIGURED');
   });
-  it('enforces radius 50 at the database and API layers', async () => {
-    expect(
-      (
-        await request(app)
-          .patch(`/api/v1/admin/offices/${offices.KI_SUMUT}`)
-          .auth(adminAccess, { type: 'bearer' })
-          .send({ radius_m: 100 })
-      ).status,
-    ).toBe(400);
-    await expect(
-      pool.query('UPDATE offices SET radius_m=100 WHERE id=$1', [offices.KI_SUMUT]),
-    ).rejects.toMatchObject({ code: '23514' });
+  it('configures and validates polygon geofencing at API and database layers', async () => {
+    const invalid = await request(app)
+      .patch(`/api/v1/admin/offices/${offices.KI_SUMUT}`)
+      .auth(adminAccess, { type: 'bearer' })
+      .send({
+        polygon: [
+          { latitude: 3.5, longitude: 98.6 },
+          { latitude: 3.51, longitude: 98.61 },
+        ],
+      });
+    expect(invalid.status).toBe(400);
+
+    const valid = await request(app)
+      .patch(`/api/v1/admin/offices/${offices.KI_SUMUT}`)
+      .auth(adminAccess, { type: 'bearer' })
+      .send({
+        polygon: [
+          { latitude: 3.58, longitude: 98.67 },
+          { latitude: 3.585, longitude: 98.67 },
+          { latitude: 3.585, longitude: 98.675 },
+          { latitude: 3.58, longitude: 98.675 },
+        ],
+      });
+    expect(valid.status).toBe(200);
+    const dbOffice = (
+      await pool.query('SELECT polygon IS NOT NULL AS has_polygon FROM offices WHERE id=$1', [
+        offices.KI_SUMUT,
+      ])
+    ).rows[0];
+    expect(dbOffice.has_polygon).toBe(true);
   });
   it('prevents audit updates and does not expose biometric templates', async () => {
     expect((await (await capture()).send()).status).toBe(201);

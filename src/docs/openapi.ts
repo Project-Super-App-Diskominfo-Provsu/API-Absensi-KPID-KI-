@@ -78,7 +78,7 @@ export const openapi = {
     title: 'API Absensi KPID/KI Sumatera Utara',
     version: '0.1.0',
     description:
-      'Implementasi awal P0. Radius 50 meter. Model/PAD dan threshold wajib dikonfigurasi sebelum absensi. Endpoint administratif yang mengubah lokasi hanya untuk SUPER_ADMIN.',
+      'Implementasi awal P0. Geofencing polygon PostGIS dengan batas maksimum 50 meter dari pusat kantor. Model/PAD dan threshold wajib dikonfigurasi sebelum absensi. Endpoint administratif yang mengubah lokasi hanya untuk SUPER_ADMIN.',
   },
   servers: [{ url: '/api/v1' }],
   components: {
@@ -110,6 +110,32 @@ export const openapi = {
           name: str,
           latitude: { type: 'number', minimum: -90, maximum: 90 },
           longitude: { type: 'number', minimum: -180, maximum: 180 },
+          polygon: {
+            description:
+              'Polygon opsional untuk mempersempit area. Jika pusat kantor diubah tanpa polygon, server membentuk buffer 50 meter otomatis. Interior ring GeoJSON dipertahankan; polygon tidak valid ditolak.',
+            oneOf: [
+              {
+                type: 'array',
+                minItems: 3,
+                items: {
+                  type: 'object',
+                  properties: {
+                    latitude: { type: 'number', minimum: -90, maximum: 90 },
+                    longitude: { type: 'number', minimum: -180, maximum: 180 },
+                  },
+                  required: ['latitude', 'longitude'],
+                },
+              },
+              {
+                type: 'object',
+                properties: {
+                  type: { type: 'string', const: 'Polygon' },
+                  coordinates: { type: 'array' },
+                },
+                required: ['type', 'coordinates'],
+              },
+            ],
+          },
           radius_m: { const: 50 },
           max_gps_accuracy_m: { type: 'number', exclusiveMinimum: 0, maximum: 50 },
           max_location_age_s: { type: 'integer', minimum: 1, maximum: 120 },
@@ -215,10 +241,13 @@ export const openapi = {
     '/offices': { get: operation('Lokasi aktif yang diizinkan kategori pegawai') },
     '/admin/offices': { get: operation('Daftar ketiga kantor, termasuk yang belum aktif') },
     '/admin/offices/{id}': {
-      patch: operation('SUPER_ADMIN: konfigurasi atau nonaktifkan kantor; radius tetap 50', {
-        body: 'OfficePatch',
-        id: true,
-      }),
+      patch: operation(
+        'SUPER_ADMIN: konfigurasi atau nonaktifkan kantor; geofence poligon PostGIS',
+        {
+          body: 'OfficePatch',
+          id: true,
+        },
+      ),
     },
     '/admin/users': {
       get: operation('Daftar pegawai dalam lingkup admin', { parameters: pagination }),

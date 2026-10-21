@@ -282,7 +282,9 @@ export async function recordAttendance(
           ...inserted.rows[0],
           attempt_id: reservation.id,
           office_code: final.office.code,
-          radius_m: 50,
+          geofence_type: 'POLYGON',
+          distance_m: final.office.distance_m,
+          radius_m: final.office.radius_m ?? 50,
           verification_status: 'ACCEPTED',
         },
       };
