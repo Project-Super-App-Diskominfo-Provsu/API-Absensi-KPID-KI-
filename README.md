@@ -8,7 +8,7 @@ Struktur modul, tanggung jawab setiap lapisan, dan aturan dependency dijelaskan 
 
 Tersedia: autentikasi JWT dengan refresh rotation dan pencabutan keluarga sesi saat reuse, CRUD pegawai terbatas kewenangan, kategori KPID/KI, unit, konfigurasi tiga kantor, pengajuan/persetujuan perangkat Ed25519, jadwal aktual per tanggal kerja, enrollment 3–5 foto dengan persetujuan identitas, penghapusan template, check-in/check-out, idempotency persisten, nonce sekali pakai, riwayat, audit append-only, OpenAPI, health/readiness, dan worker ONNX.
 
-Ketiga kantor di-seed **nonaktif tanpa koordinat**. Tidak ada akun atau password admin bawaan. Tidak ada model biometrik yang diunduh otomatis. Absensi belum dapat digunakan operasional sampai kantor, jadwal, perangkat, enrollment, model, dan threshold sudah siap.
+Ketiga kantor di-seed **nonaktif dengan pusat dari pin Google Maps pengguna dan polygon 50 meter** (migration 007, untuk kantor yang belum dikonfigurasi). Tidak ada akun atau password admin bawaan. Tidak ada model biometrik yang diunduh otomatis. Absensi belum dapat digunakan operasional sampai kantor, jadwal, perangkat, enrollment, model, dan threshold sudah siap.
 
 Belum tersedia: persetujuan koreksi/manual, penyelesaian administratif status `NEEDS_REVIEW`, ekspor CSV/XLSX, impor massal, push notification, integrasi Play Integrity/SSO, object storage, serta uji akurasi/PAD dan benchmark dengan model operasional. Jangan menganggap target FAR/FRR atau p95 pada PRD telah terbukti. Foto hanya diproses di memori dan tidak disimpan; bukti visual untuk review belum tersedia.
 
@@ -154,9 +154,9 @@ Passive PAD, signature perangkat, dan flag mock bukan jaminan kamera/lokasi asli
 
 ## Penyimpanan koordinat dan geofencing PostGIS
 
-PostgreSQL menjadi sumber kebenaran koordinat, status aktif, izin kategori dan kebijakan GPS kantor. Setiap verifikasi awal dan akhir absensi menghitung jarak dengan PostGIS geography: ST_DWithin menentukan radius 50 meter dan ST_Distance mencatat jarak spheroid dari koordinat asli. Redis tetap digunakan untuk rate limiting, tanpa operasi GEO. Untuk tiga kantor, titik geography dibentuk dari kolom latitude/longitude pada query; indeks spasial terpisah belum diperlukan untuk jumlah ini.
+PostgreSQL menjadi sumber kebenaran koordinat, status aktif, izin kategori dan kebijakan GPS kantor. Setiap verifikasi awal dan akhir absensi menghitung jarak dengan PostGIS geography: ST_Covers menentukan keanggotaan polygon, ST_DWithin membatasi jarak maksimum 50 meter, dan ST_Distance mencatat jarak spheroid dari titik pusat kantor. Polygon default dibentuk otomatis dari pusat kantor dengan buffer geography 50 meter saat admin menetapkan koordinat. Redis tetap digunakan untuk rate limiting, tanpa operasi GEO. Untuk tiga kantor, titik geography dibentuk dari kolom latitude/longitude pada query; indeks spasial terpisah belum diperlukan untuk jumlah ini.
 
-Riwayat migration 001–003 dipertahankan. Database baru memakai baseline 001_initial_postgres.sql, sedangkan database legacy mempertahankan 001_initial.sql beserta location geography dan trigger sinkronisasinya. Migration 004_postgis_geofencing.sql mengaktifkan PostGIS untuk kedua jalur tanpa menghapus data. Paket PostGIS harus tersedia pada server database eksternal; database dan Redis tidak diprovisikan Compose aplikasi. Lihat [panduan upgrade database](docs/docker.md#postgresql-dengan-postgis-dan-upgrade-legacy).
+Riwayat migration 001–003 dipertahankan. Database baru memakai baseline 001_initial_postgres.sql, sedangkan database legacy mempertahankan 001_initial.sql beserta location geography dan trigger sinkronisasinya. Migration 004_postgis_geofencing.sql mengaktifkan PostGIS untuk kedua jalur tanpa menghapus data. Paket PostGIS harus tersedia pada server database eksternal; database dan Redis tidak diprovisikan Compose aplikasi. Migration 005 menambahkan polygon, dan 006 mengunci kebijakan buffer 50 meter serta menyimpan alamat kantor. Migration 007 mengisi tiga pusat dari pin Google Maps pengguna tanpa menimpa konfigurasi admin. Lihat [panduan Docker](docs/docker.md).
 
 ## Pengujian
 

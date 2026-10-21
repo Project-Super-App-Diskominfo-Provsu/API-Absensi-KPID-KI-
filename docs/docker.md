@@ -72,21 +72,45 @@ Database yang sudah berisi tabel aplikasi tetapi tidak memiliki ledger tidak dia
 
 Jika mode otomatis dimatikan, startup memeriksa nama dan checksum setiap file migrasi yang dibutuhkan image. Ledger kosong, migrasi tertunda, atau checksum berbeda menghentikan startup. Entri migrasi tambahan dari image yang lebih baru diperbolehkan agar rollback image tetap mungkin selama skema bersifat additive dan kompatibel. Jika skema belum tersedia, startup mencatat instruksi untuk menjalankan `db:migrate:production` atau mengaktifkan flag tersebut. Pada Dokploy Application Dockerfile, default flag berasal dari image, sehingga tidak perlu bergantung pada Compose untuk menjalankan inisialisasi database.
 
-## PostgreSQL dengan PostGIS dan upgrade legacy
+## PostgreSQL dengan PostGIS dan Setup Container untuk DevOps
 
-PostGIS diperlukan untuk perhitungan radius 50 meter. PostgreSQL dan Redis tetap layanan eksternal, terpisah dari Compose aplikasi. Pada database Dokploy, jangan menganggap image PostgreSQL polos sudah membawa PostGIS. DevOps perlu memasang paket extension yang cocok dengan major PostgreSQL pada server database, atau menggunakan image PostgreSQL/PostGIS yang disetujui untuk layanan database eksternal. Dockerfile.postgres adalah opsi penyiapan layanan database terpisah, bukan service tambahan pada Compose aplikasi. Jangan mengganti image/major database berisi data tanpa backup, verifikasi kompatibilitas PGDATA, dan prosedur rollout.
+PostGIS diperlukan untuk validasi geofencing poligon kantor. PostgreSQL/PostGIS dapat dijalankan sebagai container mandiri menggunakan `compose.postgres.yaml`; Redis tetap layanan eksternal. Password PostgreSQL wajib diberikan dan port host hanya diikat pada loopback. Hubungkan API ke jaringan privat database melalui Dokploy untuk komunikasi antar-container.
 
-Periksa melalui koneksi DBA ke database target:
+### Menyiapkan dan Mem-push Image PostgreSQL + PostGIS (DevOps)
+
+Tersedia `Dockerfile.postgres` berbasis PostgreSQL 17 Bookworm yang sudah dilengkapi paket PostGIS 3 serta skrip inisialisasi otomatis (`scripts/init-postgis.sh` -> `/docker-entrypoint-initdb.d/10_postgis.sh`) agar extension `postgis` langsung aktif saat database baru dibuat.
+
+1. **Build dan Tag Image:**
+   ```bash
+   docker build -t registry.example.com/absensi/postgres-postgis:17 -f Dockerfile.postgres .
+   ```
+2. **Push ke Container Registry:**
+   ```bash
+   docker push registry.example.com/absensi/postgres-postgis:17
+   ```
+3. **Menjalankan di Server (Docker Compose):**
+   Gunakan file `compose.postgres.yaml` yang sudah disediakan:
+   ```bash
+   docker compose -f compose.postgres.yaml up -d
+   ```
+   Atau definisikan variabel environment:
+   - `POSTGRES_USER`: Username admin database (default: `absensi`)
+   - `POSTGRES_PASSWORD`: Password database
+   - `POSTGRES_DB`: Nama database (default: `absensi`)
+   - `POSTGRES_PORT`: Port host yang dipetakan (default: `55432`)
+
+Periksa extension melalui query DBA ke database target:
 
 ~~~sql
 SELECT name, installed_version FROM pg_available_extensions WHERE name='postgis';
+SELECT PostGIS_Version();
 ~~~
 
-Jika tidak ada baris, paket extension belum tersedia. Jika tersedia tetapi belum aktif, DBA dapat menjalankan CREATE EXTENSION IF NOT EXISTS postgis, atau memberi role migrasi izin yang diperlukan agar migration 004 menjalankannya. Sesudah migrasi, SELECT PostGIS_Version() harus berhasil. Runtime API tidak perlu hak membuat extension apabila migrasi dijalankan terpisah dan DB_MIGRATE_ON_START=false.
+### Migrasi Geofencing Poligon (Migration 005)
 
-Migrator mempertahankan dua baseline historis: 001_initial.sql untuk legacy dan 001_initial_postgres.sql untuk database yang memakai kolom numeric. Migration 002 dan 003 tetap utuh. Migration 004_postgis_geofencing.sql mengaktifkan extension tanpa mengubah koordinat, ID, template wajah, atau ledger lama. Jangan menjalankan SQL satu per satu untuk memalsukan ledger. Startup menolak migrasi yang belum diterapkan atau checksum berbeda dan melaporkan nama migration yang bermasalah.
-
-Query geofencing membentuk geography dari latitude/longitude lalu memakai ST_DWithin dengan 50 meter dan ST_Distance dengan spheroid default. Tidak ada kuantisasi atau command Redis GEO. Pada database legacy, kolom location dan trigger sinkronisasi tetap ada untuk kompatibilitas kode lama. Database numeric yang tidak memiliki kolom location tetap tidak kompatibel dengan image lama yang mengharuskan kolom tersebut; rollback memerlukan image yang kompatibel dan tidak menghapus extension atau data otomatis. Backup dan uji restore tetap diperlukan.
+- Migration `005_office_polygon.sql` menambahkan kolom `polygon geometry(Polygon, 4326)` pada tabel `offices` beserta spatial index GiST.
+- Kantor yang sudah memiliki koordinat titik mendapat backfill polygon; status aktif dipertahankan. Migration 006 memastikan buffer default mengikuti kebijakan 50 meter. Uji upgrade di staging sebelum deployment.
+- Query geofencing memerlukan `ST_Covers(o.polygon, point)` dan `ST_DWithin(center::geography, point::geography, 50)`. `ST_Distance` menghitung jarak pegawai dari pusat kantor, termasuk ketika pegawai berada dalam polygon.
 
 ## Worker wajah opsional
 
@@ -132,3 +156,24 @@ Pantau readiness, restart, 5xx/429, durasi request, pool/connection PostgreSQL, 
 ## Port API lokal sudah dipakai
 
 Jika startup melaporkan EADDRINUSE, hentikan server API lama pada terminal asal dengan Ctrl+C, lalu jalankan npm run dev kembali. Periksa pemilik port di PowerShell dengan Get-NetTCPConnection -LocalPort 3000 -State Listen. Jangan menghentikan proses lain sebelum mengenali pemiliknya. Alternatif lokal: ubah PORT ke port bebas; untuk Compose ubah API_HOST_PORT. Log berhasil startup hanya dicetak setelah listener benar-benar terbuka.
+
+## Aturan kantor dan buffer 50 meter
+
+Migration 006 mencatat alamat Diskominfo Provsu (Jl. HM. Said No.27), KPID Sumut (Jl. Adinegoro No.7), dan KI Sumut (Jl. Alfalah No.22). Pusat absensi harus berupa latitude/longitude yang diverifikasi. PATCH /api/v1/admin/offices/{id} dengan pasangan koordinat membentuk polygon geography buffer 50 meter pada server. Radius selain 50 ditolak. Polygon menggunakan quad_segs=64; keputusan akhir juga memakai ST_DWithin geography 50 meter agar pendekatan bentuk polygon tidak memperluas batas maksimum. Titik pusat yang berubah membentuk ulang polygon, termasuk penulisan melalui jalur legacy.
+
+Area custom tetap dapat mempersempit area absensi; seluruh interior ring dipertahankan dan polygon tidak valid ditolak. Lokasi hanya diterima jika berada dalam polygon dan maksimal 50 meter dari titik pusat. Aturan kategori tetap KPID: Diskominfo/KPID; KI: Diskominfo/KI. Konfigurasi tidak meloloskan kategori lain meskipun posisi berada dalam polygon kantor tersebut.
+
+
+### Pusat kantor dari pin Google Maps (21 Oktober 2026)
+
+Koordinat berikut menggunakan titik tempat pada tautan Google Maps yang diberikan pengguna, bukan pusat viewport peta. Urutan kolom: latitude, longitude.
+
+| Kantor | Latitude | Longitude | Sumber |
+| --- | --- | --- | --- |
+| Diskominfo Provsu | 3.601785 | 98.682827 | [Pin Diskominfo](https://maps.app.goo.gl/VSY7gHx8Z6TsC2CA9) |
+| KPID Sumut | 3.601287 | 98.6823199 | [Pin KPID](https://maps.app.goo.gl/QxJFYrK3XUDHjVPdA) |
+| KI Sumut | 3.5464663 | 98.6946129 | [Pin KI](https://maps.app.goo.gl/DUhWXSKG119ffTfi8) |
+
+Migration 007 mengisi pusat kantor yang belum memiliki koordinat maupun polygon. Trigger migration 006 otomatis membuat polygon buffer 50 meter. Koordinat atau polygon yang sudah dikonfigurasi admin dipertahankan; untuk kantor tersebut, admin perlu menyelaraskan pusat melalui endpoint PATCH kantor jika diperlukan. Jalankan migrasi dengan npm run db:migrate (lokal) atau npm run db:migrate:production (hasil build).
+
+Migration ini tidak mengaktifkan kantor atau mengisi batas akurasi/umur lokasi GPS. Admin harus menentukan kebijakan GPS dan mengaktifkan kantor sebelum absensi digunakan. Kebijakan kategori tetap: KPID boleh di Diskominfo dan KPID; KI boleh di Diskominfo dan KI. Izin kategori diperiksa bersama polygon dan batas jarak geography 50 meter. Polygon antar kantor yang berdekatan dapat beririsan; sistem menentukan kantor dari lokasi dan izin kategori pengguna. Ketepatan pin terhadap titik absensi fisik tetap perlu diuji di lokasi.

@@ -1,6 +1,6 @@
 # PRD — Backend Service Sistem Absensi Face Recognition dan Geofencing
 
-Draft v0.3 · 20 Oktober 2026 · Status: implementasi awal P0; aturan lokasi, kategori, platform Android, dan perpindahan kantor disepakati
+Draft v0.4 · 21 Oktober 2026 · Status: implementasi awal P0; aturan lokasi, kategori, platform Android, dan perpindahan kantor disepakati
 
 > Acuan implementasi: backend utama Express.js dengan REST API, frontend mobile React Native untuk **Android saja** dikerjakan terpisah. Tiga lokasi kantor, kategori pegawai KPID/KI, matriks izin lokasi, radius 50 meter, dan izin masuk/pulang di kantor berbeda yang sama-sama diizinkan adalah **kebutuhan yang telah disepakati**. Koordinat belum ditentukan. Angka target, threshold, dan pilihan teknologi lainnya tetap **usulan** yang perlu divalidasi (lihat bagian 15). Status implementasi dan keputusan teknis awal tercatat di bagian 17; keberadaan kode belum membuktikan akurasi model atau kesiapan operasional.
 
@@ -113,7 +113,7 @@ Check-out mengikuti validasi kategori dan lokasi yang sama. **Masuk dan pulang b
 ## 7. Aturan Bisnis
 
 - Waktu otoritatif adalah waktu server; perhitungan hari kerja memakai zona waktu per lokasi kantor.
-- Jarak dihitung di PostGIS (`ST_DWithin` pada tipe geography), bukan di aplikasi.
+- Area absensi berupa polygon PostGIS dari buffer 50 meter terhadap titik pusat kantor yang diverifikasi. Posisi wajib tercakup polygon (`ST_Covers`) dan berjarak maksimal 50 meter menurut `ST_DWithin` geography. Perhitungan dilakukan server; bentuk polygon tidak memperbesar batas jarak.
 - Radius absensi adalah **50 meter** untuk ketiga lokasi, berlaku untuk check-in dan check-out. Perubahan kebijakan radius memerlukan keputusan eksplisit dan audit; GPS buruk tidak boleh memperbesar radius secara otomatis.
 - Batas akurasi GPS terpisah dari radius absensi dan ditetapkan setelah pilot di ketiga kantor; angka final belum disepakati. Absen ditolak bila estimasi akurasi melebihi batas yang ditetapkan. Radius 50 meter tidak berarti toleransi akurasi GPS juga 50 meter.
 - Akun yang melakukan absensi wajib memiliki kategori aktif `KPID` atau `KI`. Kategori kosong/tidak dikenal tidak mendapat izin lokasi secara default.
@@ -406,3 +406,38 @@ Perbaikan DevOps untuk environment runtime Dokploy, `.env` opsional, biometrik y
 Error lokal `HTTP listener failed` disebabkan port 3000 masih dipakai proses API lama. Logging listener sekarang memakai event `listening` pada HTTP server, sehingga gagal bind tidak lagi mencetak sukses startup. Error menyertakan kode seperti `EADDRINUSE` dan port. Kegagalan verifikasi skema menyebut migration yang tertunda/berubah tanpa mencetak credential.
 
 Verifikasi 20 Oktober 2026: 33 tes unit/kontrak/worker dan 66 tes integrasi termasuk upgrade legacy lulus; typecheck, format, arsitektur 58 source tanpa siklus runtime, serta build lulus. Tes radius memproyeksikan titik dari koordinat asli pada empat arah, mencakup 49,75/49,99 meter yang diterima dan 50,01/50,20 meter yang ditolak. Tes proses membuktikan port terpakai menghasilkan `EADDRINUSE`, exit 1, dan tidak mencetak sukses startup. Migrasi 004 lokal berhasil dengan data tiga kantor tetap utuh. Image terbaru berhasil dibangun; container production non-root/read-only melewati auto-migration, `/ready/auth` 200, hash/verifikasi Argon2, pemrosesan Sharp, dan import ONNX Runtime. Model biometrik serta reverse proxy staging sebenarnya tetap memerlukan pengujian operasional.
+
+### 17.9 Polygon Kantor dengan Batas 50 Meter
+
+Pengguna menegaskan tiga lokasi dan alamat pada 21 Oktober 2026:
+
+| Kode | Kantor | Alamat dari pengguna | Titik pusat absensi |
+| --- | --- | --- | --- |
+| DISKOMINFO_PROVSU | Dinas Komunikasi dan Informatika Provinsi Sumatera Utara | Jl. HM. Said No.27, Gaharu, Kec. Medan Tim., Kota Medan, Sumatera Utara 20233 | Menunggu pin/latitude-longitude terverifikasi |
+| KPID_SUMUT | Komisi Penyiaran Indonesia Daerah Sumatera Utara | Jl. Adinegoro No.7, Gaharu, Kec. Medan Tim., Kota Medan, Sumatera Utara 20235 | Menunggu pin/latitude-longitude terverifikasi |
+| KI_SUMUT | Komisi Informasi Sumatera Utara | Jl. Alfalah No.22, Suka Maju, Kec. Medan Johor, Kota Medan, Sumatera Utara 20146 | Menunggu pin/latitude-longitude terverifikasi |
+
+KPID boleh absen di DISKOMINFO_PROVSU dan KPID_SUMUT; KI boleh absen di DISKOMINFO_PROVSU dan KI_SUMUT. Izin silang KI ke KPID dan KPID ke KI tetap ditolak. Ketentuan berlaku untuk masuk dan pulang, termasuk perpindahan kantor yang diizinkan.
+
+Migration 005 dari perubahan Antigravity dipertahankan. Migration 006 menyimpan alamat, menetapkan radius 50 meter, memvalidasi polygon, serta membentuk ulang buffer saat pusat berubah. Endpoint admin dengan pasangan latitude/longitude membentuk polygon otomatis melalui geography buffer 50 meter, quad_segs=64. Area custom dapat mempersempit cakupan; seluruh interior ring dipertahankan dan polygon menyilang ditolak. Keputusan akhir selalu membutuhkan ST_Covers serta batas geodesi ST_DWithin 50 meter. Radius selain 50 ditolak. Audit mencatat konfigurasi tersimpan setelah perubahan.
+
+Nama/alamat belum cukup menetapkan titik pusat pada ketelitian batas 50 meter. Pencarian publik mengonfirmasi alamat tetapi belum memberi titik pusat ketiganya yang dapat dipastikan. Tidak ada koordinat perkiraan atau (0,0) yang di-seed sebagai lokasi operasional. Kantor tanpa pusat dan kebijakan GPS tidak dapat diaktifkan. Pusat yang tepat perlu pin Google Maps atau latitude/longitude dari titik kantor yang ditentukan pengguna/admin.
+
+Compose datastore kini hanya memuat PostgreSQL/PostGIS, password provisioning wajib diisi, dan port host dibatasi loopback. API dan database perlu jaringan privat bersama di Dokploy; Redis tetap layanan eksternal. Image PostgreSQL hasil build telah diuji startup segar dengan extension postgis dan postgis_topology aktif. Pemeriksaan akhir: 33 tes unit/kontrak/worker serta 69 tes integrasi termasuk matriks izin kategori, validasi polygon, geofencing 50 meter, dan upgrade legacy lulus; typecheck, format, arsitektur dan build TypeScript lulus. Container uji sudah dihapus. Model wajah, pin kantor nyata, dan jaringan/proxy server masih memerlukan konfigurasi operasional.
+
+
+### Pusat kantor dari pin Google Maps (21 Oktober 2026)
+
+Koordinat berikut menggunakan titik tempat pada tautan Google Maps yang diberikan pengguna, bukan pusat viewport peta. Urutan kolom: latitude, longitude.
+
+| Kantor | Latitude | Longitude | Sumber |
+| --- | --- | --- | --- |
+| Diskominfo Provsu | 3.601785 | 98.682827 | [Pin Diskominfo](https://maps.app.goo.gl/VSY7gHx8Z6TsC2CA9) |
+| KPID Sumut | 3.601287 | 98.6823199 | [Pin KPID](https://maps.app.goo.gl/QxJFYrK3XUDHjVPdA) |
+| KI Sumut | 3.5464663 | 98.6946129 | [Pin KI](https://maps.app.goo.gl/DUhWXSKG119ffTfi8) |
+
+Migration 007 mengisi pusat kantor yang belum memiliki koordinat maupun polygon. Trigger migration 006 otomatis membuat polygon buffer 50 meter. Koordinat atau polygon yang sudah dikonfigurasi admin dipertahankan; untuk kantor tersebut, admin perlu menyelaraskan pusat melalui endpoint PATCH kantor jika diperlukan. Jalankan migrasi dengan npm run db:migrate (lokal) atau npm run db:migrate:production (hasil build).
+
+Migration ini tidak mengaktifkan kantor atau mengisi batas akurasi/umur lokasi GPS. Admin harus menentukan kebijakan GPS dan mengaktifkan kantor sebelum absensi digunakan. Kebijakan kategori tetap: KPID boleh di Diskominfo dan KPID; KI boleh di Diskominfo dan KI. Izin kategori diperiksa bersama polygon dan batas jarak geography 50 meter. Polygon antar kantor yang berdekatan dapat beririsan; sistem menentukan kantor dari lokasi dan izin kategori pengguna. Ketepatan pin terhadap titik absensi fisik tetap perlu diuji di lokasi.
+
+Verifikasi setelah penetapan pin: 33 tes unit/kontrak/worker dan 70 tes integrasi lulus pada database PostGIS serta Redis sementara. Pengujian mencakup koordinat tiga kantor, polygon valid berjarak 50 meter, izin kategori, preservasi konfigurasi lama, dan migrasi berulang. Typecheck, format, pemeriksaan arsitektur, dan build TypeScript lulus. Migration 007 belum diterapkan pada database lokal/server pengguna; jalankan migrasi pada environment tujuan.
