@@ -66,6 +66,7 @@ describe('database migrations', () => {
       '004_postgis_geofencing.sql',
       '005_office_polygon.sql',
       '006_office_geofence_policy.sql',
+      '007_office_map_centers.sql',
     ]);
     const afterOffices = (await pool.query('SELECT * FROM offices ORDER BY id')).rows;
     expect(afterOffices.map(({ polygon, address, ...rest }) => rest)).toEqual(offices);
@@ -74,7 +75,7 @@ describe('database migrations', () => {
     expect(
       (
         await pool.query(
-          "SELECT * FROM schema_migrations WHERE name NOT IN ('004_postgis_geofencing.sql', '005_office_polygon.sql', '006_office_geofence_policy.sql') ORDER BY name",
+          "SELECT * FROM schema_migrations WHERE name NOT IN ('004_postgis_geofencing.sql', '005_office_polygon.sql', '006_office_geofence_policy.sql', '007_office_map_centers.sql') ORDER BY name",
         )
       ).rows,
     ).toEqual(ledger);
@@ -94,6 +95,7 @@ describe('database migrations', () => {
 
   it('enforces coordinate pairs, bounds and active-office configuration in PostgreSQL', async () => {
     await migrateDatabase(pool);
+    await pool.query('UPDATE offices SET latitude=NULL,longitude=NULL,polygon=NULL');
     for (const sql of [
       'UPDATE offices SET latitude=3.5',
       'UPDATE offices SET latitude=91,longitude=98.6',
@@ -139,14 +141,50 @@ describe('database migrations', () => {
       '004_postgis_geofencing.sql',
       '005_office_polygon.sql',
       '006_office_geofence_policy.sql',
+      '007_office_map_centers.sql',
     ]);
-    expect((await pool.query('SELECT name,checksum FROM schema_migrations')).rowCount).toBe(6);
+    expect((await pool.query('SELECT name,checksum FROM schema_migrations')).rowCount).toBe(7);
     await expect(
       pool.query(
         'SELECT u.auth_mode,s.expires_at FROM users u LEFT JOIN refresh_sessions s ON false LIMIT 0',
       ),
     ).resolves.toBeDefined();
     expect((await pool.query('SELECT * FROM offices')).rowCount).toBe(3);
+  });
+
+  it('seeds the supplied office pins with valid 50m polygons and the category permissions', async () => {
+    await migrateDatabase(pool);
+    const rows = (
+      await pool.query(
+        `SELECT code,latitude,longitude,active,radius_m,ST_IsValid(polygon) AS valid,
+      ST_Covers(polygon,ST_SetSRID(ST_MakePoint(longitude,latitude),4326)) AS covers_center,
+      ST_Distance(ST_SetSRID(ST_MakePoint(longitude,latitude),4326)::geography,
+        ST_PointN(ST_ExteriorRing(polygon),1)::geography) AS edge_distance
+      FROM offices ORDER BY code`,
+      )
+    ).rows;
+    expect(rows.map(({ code, latitude, longitude }) => ({ code, latitude, longitude }))).toEqual([
+      { code: 'DISKOMINFO_PROVSU', latitude: 3.601785, longitude: 98.682827 },
+      { code: 'KI_SUMUT', latitude: 3.5464663, longitude: 98.6946129 },
+      { code: 'KPID_SUMUT', latitude: 3.601287, longitude: 98.6823199 },
+    ]);
+    for (const row of rows) {
+      expect(row).toMatchObject({ active: false, radius_m: 50, valid: true, covers_center: true });
+      expect(row.edge_distance).toBeCloseTo(50, 0);
+    }
+    expect(
+      (
+        await pool.query(
+          `SELECT p.employee_category_code AS category,o.code FROM category_office_permissions p
+      JOIN offices o ON o.id=p.office_id ORDER BY category,o.code`,
+        )
+      ).rows,
+    ).toEqual([
+      { category: 'KI', code: 'DISKOMINFO_PROVSU' },
+      { category: 'KI', code: 'KI_SUMUT' },
+      { category: 'KPID', code: 'DISKOMINFO_PROVSU' },
+      { category: 'KPID', code: 'KPID_SUMUT' },
+    ]);
   });
 
   it('skips applied migrations on restart and preserves existing data', async () => {
@@ -165,8 +203,8 @@ describe('database migrations', () => {
 
   it('serializes simultaneous migrations from multiple replicas', async () => {
     const results = await Promise.all([migrateDatabase(pool), migrateDatabase(pool)]);
-    expect(results.map((names) => names.length).sort()).toEqual([0, 6]);
-    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(6);
+    expect(results.map((names) => names.length).sort()).toEqual([0, 7]);
+    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(7);
     expect((await pool.query('SELECT * FROM offices')).rowCount).toBe(3);
   });
 
@@ -180,7 +218,7 @@ describe('database migrations', () => {
       'Applied migration changed: 001_initial_postgres.sql',
     );
     expect((await pool.query("SELECT * FROM units WHERE name='Preserved unit'")).rowCount).toBe(1);
-    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(6);
+    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(7);
   });
 
   it('rolls back all pending schema changes and the ledger if any SQL fails', async () => {

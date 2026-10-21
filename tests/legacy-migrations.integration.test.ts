@@ -47,16 +47,18 @@ describe.skipIf(!process.env.TEST_LEGACY_DATABASE_URL)('legacy PostGIS upgrade',
       '004_postgis_geofencing.sql',
       '005_office_polygon.sql',
       '006_office_geofence_policy.sql',
+      '007_office_map_centers.sql',
     ]);
     expect(
       (
         await pool.query(
-          'SELECT * FROM schema_migrations WHERE name NOT IN ($1,$2,$3,$4) ORDER BY name',
+          'SELECT * FROM schema_migrations WHERE name NOT IN ($1,$2,$3,$4,$5) ORDER BY name',
           [
             '003_office_coordinates.sql',
             '004_postgis_geofencing.sql',
             '005_office_polygon.sql',
             '006_office_geofence_policy.sql',
+            '007_office_map_centers.sql',
           ],
         )
       ).rows,
