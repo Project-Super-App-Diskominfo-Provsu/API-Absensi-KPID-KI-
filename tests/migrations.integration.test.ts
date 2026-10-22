@@ -97,6 +97,58 @@ describe('database migrations', () => {
     expect(await migrateDatabase(pool, directory)).toEqual([]);
   });
 
+  it('refuses an overnight schedule upgrade without changing schedules, users or the previous ledger', async () => {
+    fixtureDirectory = await mkdtemp(join(tmpdir(), 'absensi-schedule-upgrade-'));
+    for (const name of await readdir(new URL('../migrations/', import.meta.url))) {
+      if (name.endsWith('.sql') && name < '008_')
+        await copyFile(
+          new URL('../migrations/' + name, import.meta.url),
+          join(fixtureDirectory, name),
+        );
+    }
+    await migrateDatabase(pool, pathToFileURL(fixtureDirectory + '/'));
+    const user = (
+      await pool.query(
+        "INSERT INTO users(employee_number,name,email,password_hash,role,employee_category_code) VALUES('QA1','QA','qa@example.test','fixture','EMPLOYEE','KPID') RETURNING id",
+      )
+    ).rows[0];
+    await pool.query(
+      "INSERT INTO work_schedules(user_id,work_date,starts_at,ends_at) VALUES($1,'2035-01-01','2035-01-01T22:00:00+07:00','2035-01-02T06:00:00+07:00')",
+      [user.id],
+    );
+    const schedules = (await pool.query('SELECT * FROM work_schedules')).rows;
+    const ledger = (await pool.query('SELECT * FROM schema_migrations ORDER BY name')).rows;
+    await expect(migrateDatabase(pool)).rejects.toThrow(
+      'Cross-date schedules exist. Review work_schedules',
+    );
+    expect((await pool.query('SELECT * FROM work_schedules')).rows).toEqual(schedules);
+    expect((await pool.query('SELECT * FROM schema_migrations ORDER BY name')).rows).toEqual(
+      ledger,
+    );
+    expect(
+      (
+        await pool.query(
+          "SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='face_enrollment_version'",
+        )
+      ).rowCount,
+    ).toBe(0);
+    await pool.query("UPDATE work_schedules SET ends_at='2035-01-01T23:59:00+07:00'");
+    const corrected = (await pool.query('SELECT * FROM work_schedules')).rows;
+    expect(await migrateDatabase(pool)).toEqual([
+      '008_face_enrollment_version.sql',
+      '009_same_day_schedules.sql',
+    ]);
+    expect((await pool.query('SELECT * FROM work_schedules')).rows).toEqual(corrected);
+    expect(
+      (await pool.query('SELECT face_enrollment_version FROM users WHERE id=$1', [user.id])).rows,
+    ).toEqual([{ face_enrollment_version: 0 }]);
+    await expect(
+      pool.query("UPDATE work_schedules SET ends_at='2035-01-02T06:00:00+07:00'"),
+    ).rejects.toMatchObject({ code: '23514', constraint: 'work_schedules_same_day' });
+    await expect(verifyDatabaseSchema(pool)).resolves.toBeUndefined();
+    expect(await migrateDatabase(pool)).toEqual([]);
+  });
+
   it('upgrades the portable baseline to PostGIS without changing existing coordinates or data', async () => {
     fixtureDirectory = await mkdtemp(join(tmpdir(), 'absensi-portable-upgrade-'));
     for (const name of ['001_initial_postgres.sql', '002_sso.sql', '003_office_coordinates.sql']) {
@@ -119,6 +171,7 @@ describe('database migrations', () => {
       '006_office_geofence_policy.sql',
       '007_office_map_centers.sql',
       '008_face_enrollment_version.sql',
+      '009_same_day_schedules.sql',
     ]);
     const afterOffices = (await pool.query('SELECT * FROM offices ORDER BY id')).rows;
     expect(afterOffices.map(({ polygon, address, ...rest }) => rest)).toEqual(offices);
@@ -127,7 +180,7 @@ describe('database migrations', () => {
     expect(
       (
         await pool.query(
-          "SELECT * FROM schema_migrations WHERE name NOT IN ('004_postgis_geofencing.sql', '005_office_polygon.sql', '006_office_geofence_policy.sql', '007_office_map_centers.sql', '008_face_enrollment_version.sql') ORDER BY name",
+          "SELECT * FROM schema_migrations WHERE name NOT IN ('004_postgis_geofencing.sql', '005_office_polygon.sql', '006_office_geofence_policy.sql', '007_office_map_centers.sql', '008_face_enrollment_version.sql', '009_same_day_schedules.sql') ORDER BY name",
         )
       ).rows,
     ).toEqual(ledger);
@@ -195,8 +248,9 @@ describe('database migrations', () => {
       '006_office_geofence_policy.sql',
       '007_office_map_centers.sql',
       '008_face_enrollment_version.sql',
+      '009_same_day_schedules.sql',
     ]);
-    expect((await pool.query('SELECT name,checksum FROM schema_migrations')).rowCount).toBe(8);
+    expect((await pool.query('SELECT name,checksum FROM schema_migrations')).rowCount).toBe(9);
     await expect(
       pool.query(
         'SELECT u.auth_mode,s.expires_at FROM users u LEFT JOIN refresh_sessions s ON false LIMIT 0',
@@ -256,8 +310,8 @@ describe('database migrations', () => {
 
   it('serializes simultaneous migrations from multiple replicas', async () => {
     const results = await Promise.all([migrateDatabase(pool), migrateDatabase(pool)]);
-    expect(results.map((names) => names.length).sort()).toEqual([0, 8]);
-    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(8);
+    expect(results.map((names) => names.length).sort()).toEqual([0, 9]);
+    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(9);
     expect((await pool.query('SELECT * FROM offices')).rowCount).toBe(3);
   });
 
@@ -271,7 +325,7 @@ describe('database migrations', () => {
       'Applied migration changed: 001_initial_postgres.sql',
     );
     expect((await pool.query("SELECT * FROM units WHERE name='Preserved unit'")).rowCount).toBe(1);
-    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(8);
+    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(9);
   });
 
   it('rolls back all pending schema changes and the ledger if any SQL fails', async () => {

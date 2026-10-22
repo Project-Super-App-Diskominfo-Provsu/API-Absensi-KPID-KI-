@@ -32,6 +32,13 @@ try {
       error_type: error?.constructor?.name,
       migration: (error as { migration?: string })?.migration,
       ...(error instanceof SchemaVerificationError ? { detail: error.message } : {}),
+      ...((error as { migration?: string })?.migration === '009_same_day_schedules.sql' &&
+      (error as { code?: string })?.code === 'P0001'
+        ? {
+            detail:
+              'Cross-date schedules exist. Review work_schedules in Asia/Jakarta before retrying migration 009; no schedules were changed.',
+          }
+        : {}),
     },
     config.DB_MIGRATE_ON_START === 'true'
       ? 'Database migration failed. Check the reported migration, checksums and database permissions. PostgreSQL must have PostGIS packages installed for migration 004. Changes were rolled back.'

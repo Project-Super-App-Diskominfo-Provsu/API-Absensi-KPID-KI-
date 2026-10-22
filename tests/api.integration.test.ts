@@ -897,6 +897,31 @@ describe('device and enrollment approvals', () => {
     },
   );
 
+  it('rejects overnight schedules at the API and database while accepting equivalent UTC timestamps', async () => {
+    const schedule = {
+      user_id: user,
+      work_date: '2035-01-01',
+      starts_at: '2035-01-01T22:00:00+07:00',
+      ends_at: '2035-01-02T06:00:00+07:00',
+    };
+    const response = await request(app)
+      .post('/api/v1/admin/schedules')
+      .auth(adminAccess, { type: 'bearer' })
+      .send(schedule);
+    expect(response.status, response.text).toBe(400);
+    expect(response.body.error.code).toBe('VALIDATION_ERROR');
+    await expect(
+      pool.query(
+        'INSERT INTO work_schedules(user_id,work_date,starts_at,ends_at) VALUES($1,$2,$3,$4)',
+        [user, schedule.work_date, schedule.starts_at, schedule.ends_at],
+      ),
+    ).rejects.toMatchObject({ code: '23514', constraint: 'work_schedules_same_day' });
+    const accepted = await request(app)
+      .post('/api/v1/admin/schedules')
+      .auth(adminAccess, { type: 'bearer' })
+      .send({ ...schedule, starts_at: '2034-12-31T17:00:00Z', ends_at: '2035-01-01T16:59:59Z' });
+    expect(accepted.status, accepted.text).toBe(201);
+  });
   it('rechecks device revocation during inference', async () => {
     workerHook = async () => {
       await pool.query("UPDATE devices SET status='REVOKED' WHERE id=$1", [device]);

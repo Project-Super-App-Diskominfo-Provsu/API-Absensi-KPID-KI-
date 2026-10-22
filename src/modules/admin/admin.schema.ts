@@ -31,6 +31,17 @@ export const updateUserSchema = z
 
 export const createUnitSchema = z.object({ name: z.string().trim().min(1).max(200) }).strict();
 
+const jakartaDate = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Jakarta',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+function workDateInJakarta(value: string): string | null {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? jakartaDate.format(timestamp) : null;
+}
+
 export const scheduleSchema = z
   .object({
     user_id: z.uuid(),
@@ -40,6 +51,12 @@ export const scheduleSchema = z
     grace_minutes: z.number().int().min(0).max(120).default(0),
   })
   .strict()
-  .refine((v) => Date.parse(v.ends_at) > Date.parse(v.starts_at));
+  .refine((v) => Date.parse(v.ends_at) > Date.parse(v.starts_at))
+  .refine(
+    (v) =>
+      workDateInJakarta(v.starts_at) === v.work_date &&
+      workDateInJakarta(v.ends_at) === v.work_date,
+    'Schedule start and end must fall on work_date in Asia/Jakarta.',
+  );
 
 export const scheduleQuerySchema = z.object({ from: z.iso.date(), to: z.iso.date() }).strict();
