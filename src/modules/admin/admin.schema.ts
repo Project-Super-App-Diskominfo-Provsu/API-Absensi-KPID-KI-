@@ -25,7 +25,11 @@ export const createUserSchema = z
   .strict();
 
 export const updateUserSchema = z
-  .object(userFieldsSchema)
+  .object({
+    ...userFieldsSchema,
+    auth_mode: z.enum(['LOCAL', 'SSO', 'BOTH']),
+    google_email_linking_allowed: z.boolean(),
+  })
   .partial()
   .strict()
   .refine((v) => Object.keys(v).length > 0);

@@ -20,6 +20,9 @@ import {
   findSsoIdentitiesByUserId,
   findSsoIdentityById,
   deleteSsoIdentity,
+  findSsoEmailCandidateForUpdate,
+  insertSsoIdentityIfUnlinked,
+  consumeGoogleEmailLinkingPermission,
   type SsoFlow,
 } from './sso.model.js';
 
@@ -187,9 +190,52 @@ export async function sessionForSsoIdentity(
   config: Config,
   identity: { issuer: string; subject: string },
   clientType: 'MOBILE' | 'WEB' = 'MOBILE',
+  options: { firstLoginEmail?: string } = {},
 ) {
   return transaction(pool, async (db) => {
-    const mapping = await findSsoIdentityByIssuerSubject(db, identity.issuer, identity.subject);
+    let mapping = await findSsoIdentityByIssuerSubject(db, identity.issuer, identity.subject);
+    if (!mapping.rowCount && options.firstLoginEmail && clientType === 'MOBILE') {
+      const candidate = (await findSsoEmailCandidateForUpdate(db, options.firstLoginEmail)).rows[0];
+      if (
+        !candidate ||
+        !candidate.active ||
+        !['SSO', 'BOTH'].includes(candidate.auth_mode) ||
+        !['EMPLOYEE', 'VERIFIER'].includes(candidate.role) ||
+        !['KPID', 'KI'].includes(candidate.employee_category_code ?? '')
+      )
+        fail(
+          403,
+          'SSO_ACCOUNT_NOT_LINKED',
+          'Akun SSO belum dipetakan atau login SSO belum diizinkan.',
+        );
+      // Another first login may have completed while waiting for the user lock.
+      mapping = await findSsoIdentityByIssuerSubject(db, identity.issuer, identity.subject);
+      if (
+        (!mapping.rowCount || mapping.rows[0]!.user_id !== candidate.id) &&
+        !candidate.google_email_linking_allowed
+      )
+        fail(403, 'SSO_ACCOUNT_NOT_LINKED', 'Penautan pertama Google belum diizinkan oleh admin.');
+      const inserted = await insertSsoIdentityIfUnlinked(
+        db,
+        candidate.id,
+        identity.issuer,
+        identity.subject,
+      );
+      mapping = await findSsoIdentityByIssuerSubject(db, identity.issuer, identity.subject);
+      if (!mapping.rowCount || mapping.rows[0]!.user_id !== candidate.id)
+        fail(
+          403,
+          'SSO_IDENTITY_CONFLICT',
+          'Identitas Google sudah memiliki pemetaan berbeda. Hubungi admin.',
+        );
+      if (inserted.rowCount) {
+        await consumeGoogleEmailLinkingPermission(db, candidate.id);
+        await audit(db, candidate.id, 'GOOGLE_IDENTITY_AUTO_LINKED', inserted.rows[0]!.id, {
+          user_id: candidate.id,
+          method: 'VERIFIED_GOOGLE_EMAIL',
+        });
+      }
+    }
     if (!mapping.rowCount) {
       fail(403, 'SSO_ACCOUNT_NOT_LINKED', 'Akun SSO belum dipetakan ke pegawai oleh admin.');
     }
@@ -237,6 +283,8 @@ export async function linkSsoIdentity(
     if (!user.rowCount) fail(404, 'NOT_FOUND', 'Pegawai tidak ditemukan.');
 
     const mapped = await insertSsoIdentity(db, input.user_id, issuer, input.subject);
+    if (issuer === 'https://accounts.google.com')
+      await consumeGoogleEmailLinkingPermission(db, input.user_id);
     await updateUserAuthMode(db, input.user_id, input.auth_mode);
     await db.query(
       'UPDATE refresh_sessions SET revoked_at=COALESCE(revoked_at,now()) WHERE user_id=$1',
@@ -266,6 +314,8 @@ export async function unlinkSsoIdentity(pool: Pool, actor: User, id: string, rea
     }
     await findUserForSsoUpdate(db, owner);
     await deleteSsoIdentity(db, id);
+    if (identity.rows[0]!.issuer === 'https://accounts.google.com')
+      await consumeGoogleEmailLinkingPermission(db, owner);
     await db.query(
       'UPDATE refresh_sessions SET revoked_at=COALESCE(revoked_at,now()) WHERE user_id=$1',
       [owner],

@@ -55,6 +55,36 @@ export async function findActiveSsoUserById(db: Db, userId: string) {
   );
 }
 
+export async function findSsoEmailCandidateForUpdate(db: Db, email: string) {
+  return db.query<{
+    id: string;
+    role: string;
+    active: boolean;
+    auth_mode: string;
+    employee_category_code: string | null;
+    google_email_linking_allowed: boolean;
+  }>(
+    'SELECT id,role,active,auth_mode,employee_category_code,google_email_linking_allowed FROM users WHERE email=$1 FOR UPDATE',
+    [email],
+  );
+}
+
+export async function insertSsoIdentityIfUnlinked(
+  db: Db,
+  userId: string,
+  issuer: string,
+  subject: string,
+) {
+  return db.query<{ id: string }>(
+    'INSERT INTO sso_identities(user_id,issuer,subject) VALUES($1,$2,$3) ON CONFLICT DO NOTHING RETURNING id',
+    [userId, issuer, subject],
+  );
+}
+
+export async function consumeGoogleEmailLinkingPermission(db: Db, userId: string) {
+  await db.query('UPDATE users SET google_email_linking_allowed=false WHERE id=$1', [userId]);
+}
+
 export async function findSsoIdentityMapping(
   db: Db,
   issuer: string,
@@ -90,7 +120,10 @@ export async function findSsoIdentitiesByUserId(db: Db, userId: string) {
 }
 
 export async function findSsoIdentityById(db: Db, id: string) {
-  return db.query<{ user_id: string }>('SELECT user_id FROM sso_identities WHERE id=$1', [id]);
+  return db.query<{ user_id: string; issuer: string }>(
+    'SELECT user_id,issuer FROM sso_identities WHERE id=$1',
+    [id],
+  );
 }
 
 export async function deleteSsoIdentity(db: Db, id: string) {

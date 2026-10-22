@@ -38,6 +38,7 @@ const schema = z
     WEB_AUTH_ENABLED: z.enum(['true', 'false']).default('false'),
     ADMIN_WEB_ORIGIN: z.string().default(''),
     GOOGLE_ENABLED: z.enum(['true', 'false']).default('false'),
+    GOOGLE_EMAIL_LINKING_ENABLED: z.enum(['true', 'false']).default('false'),
     GOOGLE_WEB_CLIENT_ID: z.string().default(''),
     GOOGLE_ANDROID_CLIENT_IDS: z.string().default(''),
     GOOGLE_CLIENT_SECRET: z.string().default(''),

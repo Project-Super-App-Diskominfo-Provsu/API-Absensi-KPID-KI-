@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from 'jose';
-import { GoogleOidcProvider } from '../src/modules/sso/google.service.js';
+import { GoogleOidcProvider, googleEmailForLinking } from '../src/modules/sso/google.service.js';
 import { readConfig } from '../src/config/env.js';
 
 const env = {
@@ -36,6 +36,42 @@ async function idToken(overrides: Record<string, unknown> = {}) {
     .sign(keys.privateKey);
 }
 describe('Google ID token verification', () => {
+  it('returns verified authoritative email only after token verification', async () => {
+    expect(
+      await provider.verifyIdToken(
+        await idToken({ email: 'Employee@Gmail.com', email_verified: true }),
+        'server-nonce',
+      ),
+    ).toMatchObject({ verified_email: 'employee@gmail.com' });
+    expect(
+      await provider.verifyIdToken(
+        await idToken({ email: 'employee@gmail.com', email_verified: false }),
+        'server-nonce',
+      ),
+    ).not.toHaveProperty('verified_email');
+  });
+  it.each([
+    { email: 'employee@gmail.com', email_verified: false },
+    { email: 'employee@gmail.com', email_verified: 'true' },
+    { email: 'employee@thirdparty.test', email_verified: true },
+    { email: 'employee@gmail.com.attacker.test', email_verified: true },
+    { email: 'not-an-email', email_verified: true },
+    { email: 'employee@thirdparty.test', email_verified: true, hd: '' },
+  ])('does not trust email claims for auto linking: %j', (claims) => {
+    expect(googleEmailForLinking(claims)).toBeUndefined();
+  });
+  it('accepts verified Workspace email without applying Gmail aliases', () => {
+    expect(
+      googleEmailForLinking({
+        email: 'Person@instansi.go.id',
+        email_verified: true,
+        hd: 'instansi.go.id',
+      }),
+    ).toBe('person@instansi.go.id');
+    expect(
+      googleEmailForLinking({ email: 'first.last+pilot@gmail.com', email_verified: true }),
+    ).toBe('first.last+pilot@gmail.com');
+  });
   it('verifies the signature and returns only the canonical issuer and subject', async () => {
     expect(
       await provider.verifyIdToken(

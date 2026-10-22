@@ -9,6 +9,7 @@ export interface User {
   employee_category_code: 'KPID' | 'KI' | null;
   unit_id: string | null;
   auth_mode: 'LOCAL' | 'SSO' | 'BOTH';
+  google_email_linking_allowed?: boolean;
   active?: boolean;
 }
 
@@ -26,7 +27,7 @@ export interface RefreshSession {
 }
 
 export const userFields =
-  'id,employee_number,name,email,role,employee_category_code,unit_id,active,auth_mode';
+  'id,employee_number,name,email,role,employee_category_code,unit_id,active,auth_mode,google_email_linking_allowed';
 
 export async function findUserByEmail(db: Db, email: string) {
   return db.query<{

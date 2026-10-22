@@ -169,7 +169,19 @@ export const openapi = {
         'employee_category_code',
       ]),
       UpdateUser: object(
-        Object.fromEntries(Object.entries(userProps).filter(([key]) => key !== 'password')),
+        {
+          ...Object.fromEntries(Object.entries(userProps).filter(([key]) => key !== 'password')),
+          auth_mode: {
+            type: 'string',
+            enum: ['LOCAL', 'SSO', 'BOTH'],
+            description: 'Hanya SUPER_ADMIN lain; perubahan mencabut sesi aktif pengguna.',
+          },
+          google_email_linking_allowed: {
+            type: 'boolean',
+            description:
+              'Izin sekali pakai untuk login pertama Google via email terverifikasi; hanya SUPER_ADMIN lain.',
+          },
+        },
         [],
       ),
       OfficePatch: object(

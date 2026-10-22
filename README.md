@@ -58,6 +58,8 @@ Compose menjalankan API dan menyediakan worker wajah opsional; tidak ada service
 
 Panduan [login internal, staging, dan migrasi untuk pengguna Laravel](docs/internal-auth.md) menjelaskan konfigurasi HTTPS/proxy, masa berlaku token, endpoint password/logout, dan cara menambahkan migrasi. SSO tetap dinonaktifkan sampai konfigurasi Google tersedia. Gunakan `GET /ready/auth` untuk kesiapan database dan Redis pada staging khusus login; `/ready` tetap memeriksa worker wajah juga.
 
+Google native dapat menautkan login pertama ke email pegawai yang sudah terdaftar dengan opt-in `GOOGLE_EMAIL_LINKING_ENABLED=true` serta izin sekali pakai per pegawai dari super admin. Data nama, NIP dan penempatan tetap berasal dari database; tidak ada registrasi pegawai otomatis. Lihat [aturan penautan Google](docs/admin-panel-api.md#pemetaan-akun-dan-kewenangan). Runtime baru memerlukan migration 011.
+
 ## Urutan menyiapkan data
 
 1. Login sebagai super admin; buat unit dan pegawai dengan kategori yang tepat.

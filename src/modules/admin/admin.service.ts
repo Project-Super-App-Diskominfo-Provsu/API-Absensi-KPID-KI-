@@ -176,8 +176,10 @@ export async function updateUser(
 
   if (
     actor.role !== 'SUPER_ADMIN' &&
-    ((input.employee_category_code &&
-      input.employee_category_code !== actor.employee_category_code) ||
+    (input.auth_mode !== undefined ||
+      input.google_email_linking_allowed !== undefined ||
+      (input.employee_category_code &&
+        input.employee_category_code !== actor.employee_category_code) ||
       (input.role && !['EMPLOYEE', 'VERIFIER'].includes(input.role as string)))
   ) {
     fail(403, 'FORBIDDEN', 'Perubahan di luar kewenangan admin.');
@@ -187,7 +189,12 @@ export async function updateUser(
     const old = await managedUser(db, actor, id);
     const updated = await updateUserFields(db, id, input);
 
-    if (input.active === false || input.role !== undefined) {
+    if (
+      input.active === false ||
+      input.role !== undefined ||
+      input.auth_mode !== undefined ||
+      input.google_email_linking_allowed !== undefined
+    ) {
       await revokeUserSessions(db, id);
     }
 

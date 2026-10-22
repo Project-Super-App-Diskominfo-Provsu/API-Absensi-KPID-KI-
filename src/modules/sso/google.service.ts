@@ -6,8 +6,25 @@ import { fail } from '../../shared/errors/api-error.js';
 import { hash, token } from '../../shared/security/crypto.js';
 import { OidcProvider, sessionForSsoIdentity, type SsoFlow } from './sso.service.js';
 import { insertGoogleFlow, consumeGoogleMobileFlow, consumeGoogleWebFlow } from './google.model.js';
+import { z } from 'zod';
 
 export const GOOGLE_ISSUER = 'https://accounts.google.com';
+export interface GoogleIdentity {
+  issuer: string;
+  subject: string;
+  verified_email?: string;
+}
+
+export function googleEmailForLinking(claims: Record<string, unknown>): string | undefined {
+  if (claims.email_verified !== true) return undefined;
+  const email = z.email().max(254).safeParse(claims.email);
+  if (!email.success) return undefined;
+  const normalized = email.data.toLowerCase();
+  // Google does not guarantee current ownership of third-party email accounts.
+  if (!normalized.endsWith('@gmail.com') && !(typeof claims.hd === 'string' && claims.hd.trim()))
+    return undefined;
+  return normalized;
+}
 export interface GoogleProvider {
   authorizationUrl(flow: SsoFlow): Promise<string>;
   verifyCode(
@@ -15,7 +32,7 @@ export interface GoogleProvider {
     code: string,
     verifier: string,
   ): Promise<{ issuer: string; subject: string }>;
-  verifyIdToken(idToken: string, nonce: string): Promise<{ issuer: string; subject: string }>;
+  verifyIdToken(idToken: string, nonce: string): Promise<GoogleIdentity>;
 }
 
 export class GoogleOidcProvider implements GoogleProvider {
@@ -64,7 +81,12 @@ export class GoogleOidcProvider implements GoogleProvider {
       (Array.isArray(payload.aud) && payload.azp === undefined)
     )
       throw new Error('Invalid Google identity');
-    return { issuer: GOOGLE_ISSUER, subject: payload.sub };
+    const email = googleEmailForLinking(payload);
+    return {
+      issuer: GOOGLE_ISSUER,
+      subject: payload.sub,
+      ...(email ? { verified_email: email } : {}),
+    };
   }
 }
 
@@ -99,7 +121,10 @@ export async function googleMobileLogin(
   }
   if (identity.issuer !== GOOGLE_ISSUER)
     fail(401, 'SSO_LOGIN_FAILED', 'Issuer Google tidak sesuai.');
-  return sessionForSsoIdentity(pool, config, identity);
+  return sessionForSsoIdentity(pool, config, identity, 'MOBILE', {
+    firstLoginEmail:
+      config.GOOGLE_EMAIL_LINKING_ENABLED === 'true' ? identity.verified_email : undefined,
+  });
 }
 
 export async function startGoogleWeb(pool: Pool, config: Config, provider: GoogleProvider) {

@@ -14,6 +14,7 @@ import { attendancePayload } from '../src/modules/attendance/attendance.service.
 import { attendanceInput } from '../src/modules/attendance/attendance.schema.js';
 import type { FaceEngine } from '../src/modules/face/face.types.js';
 import { issueSession, logoutUser } from '../src/modules/auth/auth.service.js';
+import { googleEmailForLinking } from '../src/modules/sso/google.service.js';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 
@@ -1880,5 +1881,220 @@ describe('Google native and browser login integration', () => {
           .send({})
       ).status,
     ).toBe(403);
+  });
+});
+
+describe('Google verified email first login', () => {
+  const email = 'existing.employee@gmail.com';
+  const provider = {
+    authorizationUrl: async () => 'https://accounts.google.com/',
+    verifyCode: async () => {
+      throw new Error('Web auto linking is not supported');
+    },
+    verifyIdToken: async (value: string, nonce: string) => {
+      const claims = JSON.parse(value);
+      if (claims.nonce !== nonce || !claims.sub) throw new Error('Invalid token');
+      return {
+        issuer: 'https://accounts.google.com',
+        subject: claims.sub,
+        verified_email: googleEmailForLinking(claims),
+      };
+    },
+  };
+  function linkingApp(enabled: 'true' | 'false' = 'true') {
+    return createApp(
+      pool,
+      redis,
+      {
+        ...config,
+        GOOGLE_ENABLED: 'true',
+        GOOGLE_EMAIL_LINKING_ENABLED: enabled,
+        GOOGLE_WEB_CLIENT_ID: 'web.apps.googleusercontent.com',
+      },
+      engine,
+      undefined,
+      provider,
+    );
+  }
+  async function prepareEmployee() {
+    await pool.query('UPDATE users SET email=$2 WHERE id=$1', [user, email]);
+    const update = await request(app)
+      .patch('/api/v1/admin/users/' + user)
+      .auth(adminAccess, { type: 'bearer' })
+      .send({ auth_mode: 'BOTH', google_email_linking_allowed: true });
+    expect(update.status, update.text).toBe(200);
+  }
+  async function exchange(
+    scoped: ReturnType<typeof createApp>,
+    subject: string,
+    claims: Record<string, unknown> = { email, email_verified: true },
+  ) {
+    const challenge = await request(scoped).post('/api/v1/auth/google/challenge').send({});
+    expect(challenge.status, challenge.text).toBe(201);
+    return request(scoped)
+      .post('/api/v1/auth/google')
+      .send({
+        challenge_id: challenge.body.data.challenge_id,
+        id_token: JSON.stringify({ ...claims, sub: subject, nonce: challenge.body.data.nonce }),
+      });
+  }
+  it('links only an existing eligible employee and returns authoritative database profile through me', async () => {
+    await prepareEmployee();
+    const login = await exchange(linkingApp(), 'first-google-subject', {
+      email: 'Existing.Employee@Gmail.com',
+      email_verified: true,
+      name: 'Untrusted Google display name',
+      employee_number: 'OVERRIDE',
+      employee_category_code: 'KI',
+    });
+    expect(login.status, login.text).toBe(200);
+    const me = await request(app)
+      .get('/api/v1/me')
+      .auth(login.body.data.access_token, { type: 'bearer' });
+    expect(me.body.data).toMatchObject({
+      id: user,
+      employee_number: 'U1',
+      name: 'Pegawai KPID',
+      email,
+      employee_category_code: 'KPID',
+      auth_mode: 'BOTH',
+    });
+    expect(
+      (
+        await pool.query('SELECT user_id FROM sso_identities WHERE subject=$1', [
+          'first-google-subject',
+        ])
+      ).rows[0].user_id,
+    ).toBe(user);
+    expect(
+      (
+        await pool.query(
+          "SELECT 1 FROM audit_logs WHERE action='GOOGLE_IDENTITY_AUTO_LINKED' AND actor_id=$1",
+          [user],
+        )
+      ).rowCount,
+    ).toBe(1);
+  });
+  it('preserves disabled-by-default behavior and does not create employees', async () => {
+    await prepareEmployee();
+    const result = await exchange(linkingApp('false'), 'unlinked');
+    expect(result.status).toBe(403);
+    expect((await pool.query('SELECT 1 FROM sso_identities')).rowCount).toBe(0);
+    expect((await pool.query('SELECT count(*)::int AS count FROM users')).rows[0].count).toBe(2);
+  });
+  it.each([
+    { label: 'unknown email', claims: { email: 'unknown@gmail.com', email_verified: true } },
+    { label: 'unverified email', claims: { email, email_verified: false } },
+    {
+      label: 'untrusted third-party email',
+      claims: { email: 'existing.employee@thirdparty.test', email_verified: true },
+    },
+  ])('refuses $label without creating a mapping', async ({ claims }) => {
+    await prepareEmployee();
+    if (claims.email.endsWith('@thirdparty.test'))
+      await pool.query('UPDATE users SET email=$2 WHERE id=$1', [user, claims.email]);
+    const result = await exchange(linkingApp(), 'unlinked', claims);
+    expect(result.status).toBe(403);
+    expect((await pool.query('SELECT 1 FROM sso_identities')).rowCount).toBe(0);
+  });
+  it.each(['inactive', 'LOCAL', 'ADMIN', 'SUPER_ADMIN', 'not-approved'])(
+    'refuses automatic linking for %s accounts',
+    async (condition) => {
+      await prepareEmployee();
+      if (condition === 'inactive')
+        await pool.query('UPDATE users SET active=false WHERE id=$1', [user]);
+      else if (condition === 'not-approved')
+        await pool.query('UPDATE users SET google_email_linking_allowed=false WHERE id=$1', [user]);
+      else if (condition === 'LOCAL')
+        await pool.query("UPDATE users SET auth_mode='LOCAL' WHERE id=$1", [user]);
+      else await pool.query('UPDATE users SET role=$2 WHERE id=$1', [user, condition]);
+      const result = await exchange(linkingApp(), 'unlinked');
+      expect(result.status).toBe(403);
+      expect((await pool.query('SELECT 1 FROM sso_identities')).rowCount).toBe(0);
+    },
+  );
+  it('does not replace an existing Google subject with another matching email', async () => {
+    await prepareEmployee();
+    await pool.query(
+      "INSERT INTO sso_identities(user_id,issuer,subject) VALUES($1,'https://accounts.google.com','original')",
+      [user],
+    );
+    const result = await exchange(linkingApp(), 'replacement');
+    expect(result.status).toBe(403);
+    expect(result.body.error.code).toBe('SSO_IDENTITY_CONFLICT');
+    expect(
+      (await pool.query('SELECT subject FROM sso_identities WHERE user_id=$1', [user])).rows[0]
+        .subject,
+    ).toBe('original');
+  });
+  it('keeps the original subject mapping after the Google email changes', async () => {
+    await prepareEmployee();
+    const scoped = linkingApp();
+    expect((await exchange(scoped, 'stable-subject')).status).toBe(200);
+    const result = await exchange(scoped, 'stable-subject', {
+      email: 'changed@gmail.com',
+      email_verified: true,
+    });
+    expect(result.status, result.text).toBe(200);
+    const me = await request(app)
+      .get('/api/v1/me')
+      .auth(result.body.data.access_token, { type: 'bearer' });
+    expect(me.body.data).toMatchObject({ id: user, email });
+  });
+  it('serializes concurrent first logins and audits a single mapping', async () => {
+    await prepareEmployee();
+    const scoped = linkingApp();
+    const results = await Promise.all([
+      exchange(scoped, 'concurrent-subject'),
+      exchange(scoped, 'concurrent-subject'),
+    ]);
+    expect(results.map((result) => result.status)).toEqual([200, 200]);
+    expect(
+      (await pool.query('SELECT 1 FROM sso_identities WHERE user_id=$1', [user])).rowCount,
+    ).toBe(1);
+    expect(
+      (
+        await pool.query(
+          "SELECT 1 FROM audit_logs WHERE action='GOOGLE_IDENTITY_AUTO_LINKED' AND actor_id=$1",
+          [user],
+        )
+      ).rowCount,
+    ).toBe(1);
+  });
+  it('does not auto-relink after an admin intentionally unlinks the Google account', async () => {
+    await prepareEmployee();
+    const scoped = linkingApp();
+    expect((await exchange(scoped, 'unlink-subject')).status).toBe(200);
+    const mapping = (await pool.query('SELECT id FROM sso_identities WHERE user_id=$1', [user]))
+      .rows[0];
+    const removed = await request(scoped)
+      .delete('/api/v1/admin/sso/identities/' + mapping.id)
+      .auth(adminAccess, { type: 'bearer' })
+      .send({ reason: 'Revoke Google login for this account' });
+    expect(removed.status, removed.text).toBe(204);
+    expect((await exchange(scoped, 'unlink-subject')).status).toBe(403);
+    expect(
+      (await pool.query('SELECT google_email_linking_allowed FROM users WHERE id=$1', [user]))
+        .rows[0].google_email_linking_allowed,
+    ).toBe(false);
+  });
+  it('restricts auth mode changes to another super admin and revokes prior sessions', async () => {
+    await prepareEmployee();
+    expect((await request(app).get('/api/v1/me').auth(access, { type: 'bearer' })).status).toBe(
+      401,
+    );
+    const self = await request(app)
+      .patch('/api/v1/admin/users/' + admin)
+      .auth(adminAccess, { type: 'bearer' })
+      .send({ auth_mode: 'BOTH' });
+    expect(self.status).toBe(403);
+    await pool.query("UPDATE users SET role='ADMIN',employee_category_code='KPID' WHERE id=$1", [
+      admin,
+    ]);
+    const scoped = await request(app)
+      .patch('/api/v1/admin/users/' + user)
+      .auth(adminAccess, { type: 'bearer' })
+      .send({ auth_mode: 'SSO' });
+    expect(scoped.status).toBe(403);
   });
 });
