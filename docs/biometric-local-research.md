@@ -36,7 +36,26 @@ FACE_WORKER_URL=http://localhost:8000
 FACE_WORKER_PORT=8000
 ```
 
-`FACE_WORKER_TOKEN` harus terisi secret acak minimal 32 karakter, sama pada API dan worker. Pertahankan secret yang sudah tersedia. Empat threshold API tetap kosong sampai ada hasil kalibrasi; menyiapkan worker tidak mengaktifkan penerimaan absensi.
+`FACE_WORKER_TOKEN` harus terisi secret acak minimal 32 karakter, sama pada API dan worker. Pertahankan secret yang sudah tersedia. Menyiapkan worker tidak otomatis mengaktifkan penerimaan absensi. Untuk pilot terisolasi, gunakan konfigurasi awal yang dijelaskan di bagian berikut; deployment lain tetap harus memilih threshold secara eksplisit.
+
+## Kebijakan awal pilot, 22 Oktober 2026
+
+Pemilik proyek mengizinkan konfigurasi awal sebelum foto peserta tersedia. File `config/biometric-pilot.env` menyimpan nilai tanpa secret, khusus model `research-buffalo-sc-minifasnet-v2-v1`. Salin lima variabelnya ke `.env` API atau Environment API Dokploy, kemudian restart API. File ini tidak dimuat otomatis, tidak mengubah Compose, dan tidak mengizinkan model riset pada worker secara otomatis.
+
+| Variabel | Nilai | Dasar keputusan |
+| --- | --- | --- |
+| FACE_MATCH_THRESHOLD | 0.80 | Cutoff cosine yang diminta pemilik proyek; juga digunakan untuk konsistensi enrollment. Belum dibuktikan pada peserta. |
+| FACE_REVIEW_THRESHOLD | 0.70 | Pilihan kebijakan pilot: rentang 0.10 di bawah match ditahan untuk review. Bukan hasil benchmark model. |
+| FACE_LIVENESS_THRESHOLD | 0.90 | Syarat konservatif pada keluaran softmax: skor kelas hidup minimal sembilan kali jumlah kedua kelas spoof. Bukan probabilitas bahwa orang benar-benar hidup. |
+| FACE_QUALITY_THRESHOLD | 1.00 | Memenuhi kedua referensi manifest secara utuh: sisi wajah terkecil minimal 100 piksel pada gambar input dan varians Laplacian minimal 100 pada wajah aligned 112 x 112. |
+
+Worker menghitung kualitas sebagai `min(1, face_size/100, sharpness/100)`, sehingga threshold 1.00 memiliki arti geometris/numerik yang jelas. Referensi 100 pada manifest sendiri masih heuristik eksperimen; belum ada bukti bahwa nilai tersebut cocok untuk semua kamera. Skor tepat di batas liveness/kualitas diterima; skor di bawah batas ditolak sebelum pencocokan absensi.
+
+Implementasi [exporter MiniFASNetV2](https://github.com/yakhyo/face-anti-spoofing/blob/main/onnx_inference.py) memakai softmax dan memilih kelas terbesar, dengan kelas hidup pada indeks 1. Threshold 0.90 adalah kebijakan pilot proyek yang lebih ketat dari pemilihan kelas terbesar, bukan rekomendasi angka dari upstream. Ia tidak menggantikan pengujian foto cetak, layar, atau replay.
+
+Hasil similarity di bawah 0.70 ditolak; rentang [0.70, 0.80) menjadi `NEEDS_REVIEW` dan tidak membuat attendance diterima; mulai 0.80 hanya lolos pencocokan jika pemeriksaan lain juga lolos. Alur penyelesaian review absensi belum tersedia: peserta perlu mengulang dengan selfie baru, bukan menganggap respons 202 sebagai hadir. Enrollment saat ini masih berstatus `PENDING` sampai disetujui admin; aktivasi enrollment mandiri belum diterapkan.
+
+Nilai ini membuat pilot dapat dimulai, tetapi tidak menjamin wajah asli akan lolos. Jangan menurunkan batas hanya untuk meloloskan satu request. Saat tiga peserta siap, gunakan 3–5 foto enrollment berbeda dan sesi pengujian terpisah; catat salah tolak wajah sendiri, salah terima wajah teman, serta lolos/tolaknya foto cetak dan layar. Evaluasi PAD/kualitas terlebih dahulu, kemudian match/review. Pisahkan sampel penyesuaian dari sampel verifikasi dan simpan laporan di lokasi privat, tanpa foto atau embedding dalam Git/log aplikasi. Tidak ada klaim akurasi produksi dari konfigurasi ini.
 
 ## Validasi dan menjalankan
 
@@ -104,9 +123,9 @@ Pasang `/opt/absensi-models` ke `/app/models` secara read-only dan isi shared to
 
 Readiness worker HTTP 200 membuktikan file model berhasil dimuat. Itu belum membuktikan endpoint absensi dapat menerima request: API tetap memerlukan empat threshold, versi model yang sama, key biometrik, perangkat disetujui, enrollment disetujui, kantor aktif, serta jadwal peserta. Threshold kosong tetap menghasilkan `FACE_NOT_CONFIGURED`; flag evaluasi tidak mengisi atau melewati threshold tersebut.
 
-Setelah foto peserta tersedia, lakukan pilot dengan foto enrollment dan sesi uji terpisah, catat distribusi similarity/kualitas/PAD serta salah terima/tolak, lalu tetapkan threshold uji yang terdokumentasi. Jangan mengisi semua threshold dengan nol untuk mengejar keberhasilan request. Setelah itu uji check-in/out, wajah orang berbeda, spoof, lokasi di luar batas, lokasi kantor kategori lain, pengulangan request, dan logout/perangkat dicabut. Data pilot terbatas belum membuktikan tingkat akurasi produksi.
+Setelah foto peserta tersedia, evaluasi konfigurasi awal pilot di atas dengan foto enrollment dan sesi uji terpisah. Catat distribusi similarity/kualitas/PAD serta salah terima/tolak, lalu dokumentasikan penyesuaian threshold. Jangan mengisi semua threshold dengan nol untuk mengejar keberhasilan request. Uji juga check-in/out, wajah orang berbeda, spoof, lokasi di luar batas, lokasi kantor kategori lain, pengulangan request, dan logout/perangkat dicabut. Data pilot terbatas belum membuktikan tingkat akurasi produksi.
 
-Permintaan pemilik proyek menetapkan `FACE_MATCH_THRESHOLD=0.80` sebagai batas awal. Ini cutoff cosine similarity, bukan persentase akurasi atau probabilitas identitas benar. Skor di bawah 0.80 tidak membuat attendance event diterima; skor pada rentang review menghasilkan `NEEDS_REVIEW`, bukan absensi berhasil. Skor 0.80 atau lebih hanya lolos pencocokan jika pemeriksaan lain juga lolos. Batas yang sama digunakan untuk konsistensi foto enrollment. Nilai ini belum dikalibrasi dan bisa menolak foto orang yang benar; verifikasi pada pilot sebelum memutuskan mempertahankannya. Threshold review harus lebih kecil dari 0.80, sedangkan threshold PAD dan kualitas tetap harus ditentukan secara terpisah.
+Cutoff cosine 0.80 bukan persentase akurasi atau probabilitas identitas benar. Batas yang sama digunakan untuk konsistensi foto enrollment. Nilai ini belum dikalibrasi dan bisa menolak foto orang yang benar; verifikasi pada pilot sebelum memutuskan mempertahankannya. Threshold review harus lebih kecil dari match; threshold PAD dan kualitas mengukur hal berbeda dari cosine similarity.
 
 Untuk menutup evaluasi, set `FACE_ALLOW_RESEARCH_MODELS=false` dan redeploy worker. Penggunaan paket riset akan kembali ditolak; login/admin API tetap berjalan. Jangan menghapus label riset pada manifest agar paket terlihat sebagai model operasional.
 
