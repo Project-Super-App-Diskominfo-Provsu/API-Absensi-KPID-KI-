@@ -47,11 +47,11 @@ let observation = {
   liveness_score: 0.99,
 };
 let workerError = false;
-let workerHook: (() => Promise<void>) | undefined;
+let workerHook: ((nonce: string) => Promise<void>) | undefined;
 const engine: FaceEngine = {
   ready: async () => true,
-  observe: async () => {
-    await workerHook?.();
+  observe: async (_image, nonce) => {
+    await workerHook?.(nonce);
     if (workerError) throw new Error('offline');
     return observation;
   },
@@ -105,6 +105,36 @@ async function capture(
     return req.attach('image', image, 'selfie.png');
   };
   return { send, key, fields };
+}
+
+async function enrollment() {
+  const nonce = await challenge('ENROLL');
+  const images = await Promise.all(
+    ['#c0a081', '#c0a082', '#c0a083'].map((background) =>
+      sharp({ create: { width: 128, height: 128, channels: 3, background } })
+        .png()
+        .toBuffer(),
+    ),
+  );
+  const signature = sign(
+    null,
+    Buffer.from(`enroll:${user}:${device}:${nonce}:pilot-v1:${images.map(hash).join(':')}`),
+    pair.privateKey,
+  ).toString('base64');
+  const send = () => {
+    let req = request(app)
+      .post('/api/v1/face/enroll')
+      .auth(access, { type: 'bearer' })
+      .field('device_id', device)
+      .field('nonce', nonce)
+      .field('consent', 'true')
+      .field('consent_version', 'pilot-v1')
+      .field('signature', signature);
+    for (const [index, photo] of images.entries())
+      req = req.attach('images', photo, `capture-${index}.png`);
+    return req;
+  };
+  return { send, nonce };
 }
 beforeAll(async () => {
   await adminPool.query(`CREATE DATABASE ${databaseName}`);
@@ -723,6 +753,150 @@ describe('device and enrollment approvals', () => {
       1,
     );
   });
+
+  it('invalidates an enrollment in progress when an admin resets face data, even with no saved template', async () => {
+    await pool.query('DELETE FROM face_templates WHERE user_id=$1', [user]);
+    const pending = await enrollment();
+    let reset = false;
+    workerHook = async () => {
+      if (reset) return;
+      reset = true;
+      const result = await request(app)
+        .delete(`/api/v1/admin/users/${user}/face`)
+        .auth(adminAccess, { type: 'bearer' })
+        .send({ reason: 'Reset during pending inference' });
+      expect(result.status, result.text).toBe(204);
+    };
+    const response = await pending.send();
+    expect(response.status, response.text).toBe(409);
+    expect(response.body.error.code).toBe('FACE_ENROLLMENT_CHANGED');
+    expect(
+      (await pool.query('SELECT id FROM face_templates WHERE user_id=$1', [user])).rowCount,
+    ).toBe(0);
+    expect(
+      (await pool.query('SELECT face_enrollment_version FROM users WHERE id=$1', [user])).rows[0]
+        .face_enrollment_version,
+    ).toBe(1);
+    workerHook = undefined;
+    expect((await (await enrollment()).send()).status).toBe(201);
+  });
+
+  it('accepts only one of two enrollments that start before either template is saved', async () => {
+    await pool.query('DELETE FROM face_templates WHERE user_id=$1', [user]);
+    const first = await enrollment(),
+      second = await enrollment();
+    let arrived = 0,
+      release!: () => void,
+      bothStarted!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      bothStarted = resolve;
+    });
+    workerHook = async () => {
+      arrived++;
+      if (arrived <= 2) {
+        if (arrived === 2) bothStarted();
+        await gate;
+      }
+    };
+    const requests = [first.send().then((r) => r), second.send().then((r) => r)];
+    await started;
+    release();
+    const responses = await Promise.all(requests);
+    expect(responses.map((r) => r.status).sort()).toEqual([201, 409]);
+    expect(responses.find((r) => r.status === 409)!.body.error.code).toBe(
+      'FACE_ENROLLMENT_CHANGED',
+    );
+    expect(
+      (await pool.query('SELECT status FROM face_templates WHERE user_id=$1', [user])).rows,
+    ).toEqual([{ status: 'PENDING' }]);
+  });
+
+  it('does not create another pending template if a concurrent enrollment was approved during inference', async () => {
+    await pool.query('DELETE FROM face_templates WHERE user_id=$1', [user]);
+    const slow = await enrollment();
+    let release!: () => void, inferenceStarted!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      inferenceStarted = resolve;
+    });
+    workerHook = async (nonce) => {
+      if (nonce === slow.nonce) {
+        inferenceStarted();
+        await gate;
+      }
+    };
+    const slowResponse = slow.send().then((r) => r);
+    await started;
+    try {
+      const fast = await (await enrollment()).send();
+      expect(fast.status, fast.text).toBe(201);
+      const approved = await request(app)
+        .patch(`/api/v1/admin/face-enrollments/${fast.body.data.id}`)
+        .auth(adminAccess, { type: 'bearer' })
+        .send({
+          status: 'ACTIVE',
+          identity_verified: true,
+          reason: 'Verify concurrent enrollment',
+        });
+      expect(approved.status, approved.text).toBe(204);
+    } finally {
+      release();
+    }
+    const response = await slowResponse;
+    expect(response.status, response.text).toBe(409);
+    expect(response.body.error.code).toBe('FACE_ENROLLMENT_CHANGED');
+    expect(
+      (await pool.query('SELECT status FROM face_templates WHERE user_id=$1', [user])).rows,
+    ).toEqual([{ status: 'ACTIVE' }]);
+  });
+
+  it.each(['ACTIVE', 'PENDING'])(
+    'rechecks a template inserted by another writer during inference: %s',
+    async (status) => {
+      await pool.query('DELETE FROM face_templates WHERE user_id=$1', [user]);
+      const pending = await enrollment();
+      let inserted = false;
+      workerHook = async () => {
+        if (inserted) return;
+        inserted = true;
+        await pool.query(
+          "INSERT INTO face_templates(user_id,encrypted_embedding,model_version,quality_score,consent_version,status) VALUES($1,$2,'fixture-model',1,'test',$3)",
+          [user, encrypt(embedding, config.BIOMETRIC_KEY_BASE64, user), status],
+        );
+      };
+      const result = await pending.send();
+      expect(result.status, result.text).toBe(409);
+      expect(result.body.error.code).toBe('FACE_ALREADY_ENROLLED');
+      expect(
+        (await pool.query('SELECT status FROM face_templates WHERE user_id=$1', [user])).rows,
+      ).toEqual([{ status }]);
+    },
+  );
+
+  it.each(['USER_INACTIVE', 'DEVICE_NOT_BOUND'])(
+    'rechecks %s before storing an enrollment',
+    async (code) => {
+      await pool.query('DELETE FROM face_templates WHERE user_id=$1', [user]);
+      const pending = await enrollment();
+      workerHook = async () => {
+        if (code === 'USER_INACTIVE')
+          await pool.query('UPDATE users SET active=false WHERE id=$1', [user]);
+        else await pool.query("UPDATE devices SET status='REVOKED' WHERE id=$1", [device]);
+      };
+      const result = await pending.send();
+      expect(result.status, result.text).toBe(403);
+      expect(result.body.error.code).toBe(code);
+      expect(
+        (await pool.query('SELECT id FROM face_templates WHERE user_id=$1', [user])).rowCount,
+      ).toBe(0);
+    },
+  );
+
   it('rechecks device revocation during inference', async () => {
     workerHook = async () => {
       await pool.query("UPDATE devices SET status='REVOKED' WHERE id=$1", [device]);

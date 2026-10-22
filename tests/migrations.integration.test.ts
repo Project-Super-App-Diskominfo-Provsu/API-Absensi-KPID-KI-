@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createHash, randomUUID } from 'node:crypto';
 import { setTimeout } from 'node:timers/promises';
-import { copyFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -118,6 +118,7 @@ describe('database migrations', () => {
       '005_office_polygon.sql',
       '006_office_geofence_policy.sql',
       '007_office_map_centers.sql',
+      '008_face_enrollment_version.sql',
     ]);
     const afterOffices = (await pool.query('SELECT * FROM offices ORDER BY id')).rows;
     expect(afterOffices.map(({ polygon, address, ...rest }) => rest)).toEqual(offices);
@@ -126,7 +127,7 @@ describe('database migrations', () => {
     expect(
       (
         await pool.query(
-          "SELECT * FROM schema_migrations WHERE name NOT IN ('004_postgis_geofencing.sql', '005_office_polygon.sql', '006_office_geofence_policy.sql', '007_office_map_centers.sql') ORDER BY name",
+          "SELECT * FROM schema_migrations WHERE name NOT IN ('004_postgis_geofencing.sql', '005_office_polygon.sql', '006_office_geofence_policy.sql', '007_office_map_centers.sql', '008_face_enrollment_version.sql') ORDER BY name",
         )
       ).rows,
     ).toEqual(ledger);
@@ -193,8 +194,9 @@ describe('database migrations', () => {
       '005_office_polygon.sql',
       '006_office_geofence_policy.sql',
       '007_office_map_centers.sql',
+      '008_face_enrollment_version.sql',
     ]);
-    expect((await pool.query('SELECT name,checksum FROM schema_migrations')).rowCount).toBe(7);
+    expect((await pool.query('SELECT name,checksum FROM schema_migrations')).rowCount).toBe(8);
     await expect(
       pool.query(
         'SELECT u.auth_mode,s.expires_at FROM users u LEFT JOIN refresh_sessions s ON false LIMIT 0',
@@ -254,8 +256,8 @@ describe('database migrations', () => {
 
   it('serializes simultaneous migrations from multiple replicas', async () => {
     const results = await Promise.all([migrateDatabase(pool), migrateDatabase(pool)]);
-    expect(results.map((names) => names.length).sort()).toEqual([0, 7]);
-    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(7);
+    expect(results.map((names) => names.length).sort()).toEqual([0, 8]);
+    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(8);
     expect((await pool.query('SELECT * FROM offices')).rowCount).toBe(3);
   });
 
@@ -269,7 +271,7 @@ describe('database migrations', () => {
       'Applied migration changed: 001_initial_postgres.sql',
     );
     expect((await pool.query("SELECT * FROM units WHERE name='Preserved unit'")).rowCount).toBe(1);
-    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(7);
+    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(8);
   });
 
   it('rolls back all pending schema changes and the ledger if any SQL fails', async () => {

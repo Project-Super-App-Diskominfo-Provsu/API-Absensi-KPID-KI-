@@ -15,6 +15,8 @@ import {
   findFaceTemplateById,
   updateFaceTemplateApproval,
   deleteFaceTemplatesByUserId,
+  findActiveEnrollmentUserForUpdate,
+  incrementEnrollmentVersion,
 } from './face.model.js';
 
 import type { FaceEngine, FaceObservation } from './face.types.js';
@@ -44,8 +46,9 @@ export async function enrollFace(
     fail(400, 'ENROLL_IMAGES_DUPLICATE', 'Gunakan foto yang berbeda.');
   }
 
-  await transaction(pool, async (db) => {
-    await db.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [user.id]);
+  const enrollmentVersion = await transaction(pool, async (db) => {
+    const active = await findActiveEnrollmentUserForUpdate(db, user.id);
+    if (!active.rowCount) fail(403, 'USER_INACTIVE', 'Akun tidak aktif.');
     const device = await activeDevice(db, user.id, input.device_id);
     verifyDeviceSignature(
       device.public_key,
@@ -67,6 +70,7 @@ export async function enrollFace(
       fail(409, 'FACE_ALREADY_ENROLLED', 'Reset enrollment melalui admin sebelum mendaftar ulang.');
     }
     await audit(db, user.id, 'FACE_ENROLL_STARTED', user.id);
+    return active.rows[0]!.face_enrollment_version;
   });
 
   const observations: FaceObservation[] = [];
@@ -95,11 +99,20 @@ export async function enrollFace(
   );
 
   return transaction(pool, async (db) => {
-    const active = await db.query('SELECT id FROM users WHERE id=$1 AND active FOR UPDATE', [
-      user.id,
-    ]);
+    const active = await findActiveEnrollmentUserForUpdate(db, user.id);
     if (!active.rowCount) fail(403, 'USER_INACTIVE', 'Akun tidak aktif.');
+    if (active.rows[0]!.face_enrollment_version !== enrollmentVersion) {
+      fail(
+        409,
+        'FACE_ENROLLMENT_CHANGED',
+        'Enrollment berubah atau direset. Mulai enrollment baru.',
+      );
+    }
     await activeDevice(db, user.id, input.device_id);
+    const existing = await findActiveOrPendingTemplate(db, user.id);
+    if (existing.rowCount) {
+      fail(409, 'FACE_ALREADY_ENROLLED', 'Reset enrollment melalui admin sebelum mendaftar ulang.');
+    }
     const inserted = await insertFaceTemplate(
       db,
       user.id,
@@ -108,6 +121,7 @@ export async function enrollFace(
       Math.min(...observations.map((v) => v.quality_score)),
       input.consent_version,
     );
+    await incrementEnrollmentVersion(db, user.id);
     await audit(db, user.id, 'FACE_ENROLL_PENDING', inserted.rows[0]!.id);
     return inserted.rows[0]!;
   });
@@ -156,6 +170,7 @@ export async function deleteUserFaceData(pool: Pool, actor: User, userId: string
       fail(403, 'SELF_APPROVAL_FORBIDDEN', 'Reset wajah sendiri tidak diizinkan.');
     }
     await managedUser(db, actor, userId);
+    await incrementEnrollmentVersion(db, userId);
     await deleteFaceTemplatesByUserId(db, userId);
     await audit(db, actor.id, 'FACE_DATA_DELETED', userId, { reason });
   });

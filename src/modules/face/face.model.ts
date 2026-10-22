@@ -11,6 +11,20 @@ export interface FaceTemplate {
   created_at: string;
 }
 
+export async function findActiveEnrollmentUserForUpdate(db: Db, userId: string) {
+  return db.query<{ face_enrollment_version: number }>(
+    'SELECT face_enrollment_version FROM users WHERE id=$1 AND active FOR UPDATE',
+    [userId],
+  );
+}
+
+export async function incrementEnrollmentVersion(db: Db, userId: string) {
+  return db.query(
+    'UPDATE users SET face_enrollment_version=face_enrollment_version+1 WHERE id=$1',
+    [userId],
+  );
+}
+
 export async function findActiveOrPendingTemplate(db: Db, userId: string) {
   return db.query<{ id: string }>(
     "SELECT id FROM face_templates WHERE user_id=$1 AND status IN ('ACTIVE','PENDING')",
