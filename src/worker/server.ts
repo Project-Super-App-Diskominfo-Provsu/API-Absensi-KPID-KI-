@@ -18,7 +18,9 @@ const port = z.coerce
 let engine: OnnxFaceEngine | undefined;
 if (process.env.FACE_MANIFEST_PATH) {
   try {
-    engine = await OnnxFaceEngine.load(process.env.FACE_MANIFEST_PATH);
+    engine = await OnnxFaceEngine.load(process.env.FACE_MANIFEST_PATH, {
+      allowResearch: process.env.NODE_ENV !== 'production',
+    });
     logger.info('Face models loaded');
   } catch (error) {
     logger.error(

@@ -1,11 +1,17 @@
 import { beforeAll, afterAll, describe, it, expect } from 'vitest';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
 import { hash } from '../src/shared/security/crypto.js';
 import { OnnxFaceEngine } from '../src/worker/engine.js';
-import { arcfaceLandmarks, similarityTransform, softmax, nchw } from '../src/worker/math.js';
+import {
+  arcfaceLandmarks,
+  miniFasNetCrop,
+  similarityTransform,
+  softmax,
+  nchw,
+} from '../src/worker/math.js';
 import { openapi } from '../src/docs/openapi.js';
 import SwaggerParser from '@apidevtools/swagger-parser';
 import type { OpenAPIV3_1 } from 'openapi-types';
@@ -175,6 +181,46 @@ describe('ONNX worker', () => {
     manifest.recognizer.sha256 = '0'.repeat(64);
     await writeFile(other, JSON.stringify(manifest));
     await expect(OnnxFaceEngine.load(other)).rejects.toThrow('checksum');
+  });
+  it('requires explicit research permission before loading restricted models', async () => {
+    const path = join(folder, 'research.json');
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    manifest.usage = 'RESEARCH_ONLY';
+    await writeFile(path, JSON.stringify(manifest));
+    await expect(OnnxFaceEngine.load(path)).rejects.toThrow('Research-only');
+    const engine = await OnnxFaceEngine.load(path, { allowResearch: true });
+    await engine.close();
+  });
+  it('rejects incompatible detector tensors at startup', async () => {
+    const path = join(folder, 'bad-detector.json');
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    manifest.detector.score_outputs.reverse();
+    await writeFile(path, JSON.stringify(manifest));
+    await expect(OnnxFaceEngine.load(path)).rejects.toThrow('Unsupported SCRFD tensor shapes');
+  });
+  it('rejects a missing PAD live class at startup', async () => {
+    const path = join(folder, 'bad-pad.json');
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    manifest.pad.live_class = 2;
+    await writeFile(path, JSON.stringify(manifest));
+    await expect(OnnxFaceEngine.load(path)).rejects.toThrow('PAD live class not found');
+  });
+  it('matches the selected MiniFASNet crop and raw BGR normalization', () => {
+    expect(miniFasNetCrop(640, 480, [100, 100, 200, 200], 2.7)).toEqual({
+      left: 15,
+      top: 15,
+      right: 286,
+      bottom: 286,
+    });
+    expect(miniFasNetCrop(640, 480, [0, 0, 100, 100], 2.7)).toEqual({
+      left: 0,
+      top: 0,
+      right: 186,
+      bottom: 186,
+    });
+    expect(Array.from(nchw(Buffer.from([10, 20, 255]), 1, 1, [0, 0, 0], [1, 1, 1], 'BGR'))).toEqual(
+      [255, 20, 10],
+    );
   });
   it('preserves identity alignment and stable logits', () => {
     const transform = similarityTransform(arcfaceLandmarks);

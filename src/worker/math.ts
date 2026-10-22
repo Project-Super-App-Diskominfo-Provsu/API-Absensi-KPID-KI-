@@ -108,6 +108,30 @@ export function softmax(values: number[]): number[] {
     sum = exp.reduce((a, b) => a + b, 0);
   return exp.map((v) => v / sum);
 }
+export function miniFasNetCrop(
+  width: number,
+  height: number,
+  box: [number, number, number, number],
+  requestedScale: number,
+) {
+  const x = Math.trunc(box[0]),
+    y = Math.trunc(box[1]);
+  const boxWidth = Math.trunc(box[2] - box[0]),
+    boxHeight = Math.trunc(box[3] - box[1]);
+  if (boxWidth <= 0 || boxHeight <= 0) throw new Error('Invalid PAD face bounds');
+  const scale = Math.min((height - 1) / boxHeight, (width - 1) / boxWidth, requestedScale);
+  const halfWidth = (boxWidth * scale) / 2,
+    halfHeight = (boxHeight * scale) / 2;
+  const centerX = x + boxWidth / 2,
+    centerY = y + boxHeight / 2;
+  // The selected ONNX export uses integer XYWH bounds and inclusive far edges.
+  return {
+    left: Math.max(0, Math.trunc(centerX - halfWidth)),
+    top: Math.max(0, Math.trunc(centerY - halfHeight)),
+    right: Math.min(width - 1, Math.trunc(centerX + halfWidth)) + 1,
+    bottom: Math.min(height - 1, Math.trunc(centerY + halfHeight)) + 1,
+  };
+}
 export function sharpness(rgb: Buffer, width: number, height: number): number {
   const gray = (x: number, y: number) => {
     const i = (y * width + x) * 3;
