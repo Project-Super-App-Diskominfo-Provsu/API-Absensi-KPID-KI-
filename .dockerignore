@@ -7,3 +7,4 @@ models
 secrets
 *firebase-adminsdk*.json
 coverage
+scratch

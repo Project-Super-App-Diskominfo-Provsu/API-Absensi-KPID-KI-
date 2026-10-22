@@ -10,3 +10,4 @@ __pycache__/
 models/
 secrets/
 *firebase-adminsdk*.json
+/scratch/
