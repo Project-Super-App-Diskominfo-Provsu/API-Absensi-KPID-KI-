@@ -149,3 +149,25 @@ Koordinat berikut menggunakan titik tempat pada tautan Google Maps yang diberika
 Migration 007 mengisi pusat kantor yang belum memiliki koordinat maupun polygon. Trigger migration 006 otomatis membuat polygon buffer 50 meter. Koordinat atau polygon yang sudah dikonfigurasi admin dipertahankan; untuk kantor tersebut, admin perlu menyelaraskan pusat melalui endpoint PATCH kantor jika diperlukan. Jalankan migrasi dengan npm run db:migrate (lokal) atau npm run db:migrate:production (hasil build).
 
 Migration ini tidak mengaktifkan kantor atau mengisi batas akurasi/umur lokasi GPS. Admin harus menentukan kebijakan GPS dan mengaktifkan kantor sebelum absensi digunakan. Kebijakan kategori tetap: KPID boleh di Diskominfo dan KPID; KI boleh di Diskominfo dan KI. Izin kategori diperiksa bersama polygon dan batas jarak geography 50 meter. Polygon antar kantor yang berdekatan dapat beririsan; sistem menentukan kantor dari lokasi dan izin kategori pengguna. Ketepatan pin terhadap titik absensi fisik tetap perlu diuji di lokasi.
+
+
+## Perbaikan QA 22 Oktober 2026: checksum, enrollment, dan jadwal
+
+Migrator menulis checksum LF untuk migrasi baru. Saat memeriksa ledger lama, migrator menerima checksum dari isi SQL yang sama dengan line ending LF atau CRLF. Checksum ledger lama tidak diubah, migrasi lama tidak dijalankan ulang, dan perubahan isi SQL tetap ditolak. Git mengunci migrations/*.sql ke LF. Jangan mengedit SQL historis atau mengganti checksum ledger secara manual untuk melewati pemeriksaan.
+
+Migration 008 menambahkan users.face_enrollment_version dengan nilai awal 0 tanpa mengubah template lama. Enrollment membaca versi saat mulai, lalu memeriksa ulang versi, akun, perangkat, dan template ACTIVE/PENDING di dalam transaksi sebelum menyimpan hasil inferensi. Reset admin dan penyimpanan enrollment baru menaikkan versi. Request yang kehilangan versi menerima HTTP 409 FACE_ENROLLMENT_CHANGED; mobile harus memulai enrollment baru dengan challenge baru. Template yang muncul dari writer lain juga ditolak dengan FACE_ALREADY_ENROLLED.
+
+Migration 009 menambahkan constraint bahwa starts_at dan ends_at berada pada work_date yang sama di Asia/Jakarta. API menolak jadwal lintas tanggal dengan HTTP 400 VALIDATION_ERROR. Timestamp UTC tetap diterima jika tanggal WIB-nya sesuai. Jadwal lintas tengah malam belum didukung.
+
+Sebelum deploy, periksa jadwal lama pada database tujuan:
+
+~~~sql
+SELECT id, user_id, work_date, starts_at, ends_at
+FROM work_schedules
+WHERE (starts_at AT TIME ZONE 'Asia/Jakarta')::date <> work_date
+   OR (ends_at AT TIME ZONE 'Asia/Jakarta')::date <> work_date;
+~~~
+
+Jika ada hasil, hentikan rollout dan minta pemilik jadwal menentukan koreksinya. Migrasi tidak menghapus, menggeser jadwal, atau mengubah riwayat absensi. Migration 009 menolak data tersebut dan seluruh migrasi yang masih pending di batch yang sama dibatalkan. Setelah data diselesaikan sesuai persetujuan operasional, retry migrasi.
+
+Untuk deployment, hentikan penerimaan request enrollment baru dan tunggu request pada semua replika versi lama selesai sebelum mengganti versi. Jalankan npm run db:migrate:production memakai build baru, lalu start replika baru. Kolom 008 dan constraint 009 bersifat additive; tidak perlu menghapusnya ketika rollback image. Namun, versi lama mengembalikan bug enrollment dan tidak memahami seluruh variasi checksum lama, sehingga rollback ke versi rentan bukan pemulihan yang aman untuk operasi biometrik. Jika perlu rollback darurat, pertahankan enrollment tidak tersedia sampai versi perbaikan aktif kembali. Jangan menghapus kolom atau constraint pada database berisi data.

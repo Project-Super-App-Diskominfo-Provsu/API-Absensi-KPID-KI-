@@ -147,7 +147,11 @@ export const openapi = {
       Schedule: object(
         {
           user_id: uuid,
-          work_date: date,
+          work_date: {
+            ...date,
+            description:
+              'Tanggal kerja Asia/Jakarta; starts_at dan ends_at wajib berada pada tanggal ini. Jadwal lintas tanggal belum didukung.',
+          },
           starts_at: timestamp,
           ends_at: timestamp,
           grace_minutes: { type: 'integer', minimum: 0, maximum: 120, default: 0 },
@@ -288,10 +292,13 @@ export const openapi = {
       }),
     },
     '/face/enroll': {
-      post: operation('Daftarkan 3–5 foto; menunggu verifikasi identitas admin', {
-        multipart: 'Enrollment',
-        status: 201,
-      }),
+      post: operation(
+        'Daftarkan 3–5 foto; menunggu verifikasi admin. Reset/perubahan enrollment saat pemrosesan ditolak 409 FACE_ENROLLMENT_CHANGED; mulai ulang dengan challenge baru.',
+        {
+          multipart: 'Enrollment',
+          status: 201,
+        },
+      ),
     },
     '/admin/face-enrollments': { get: operation('Daftar enrollment menunggu persetujuan') },
     '/admin/face-enrollments/{id}': {

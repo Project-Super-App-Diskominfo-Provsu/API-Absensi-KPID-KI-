@@ -1,8 +1,8 @@
 # PRD — Backend Service Sistem Absensi Face Recognition dan Geofencing
 
-Draft v0.4 · 21 Oktober 2026 · Status: implementasi awal P0; aturan lokasi, kategori, platform Android, dan perpindahan kantor disepakati
+Draft v0.5 · 22 Oktober 2026 · Status: implementasi awal P0; aturan lokasi, kategori, platform Android, dan perpindahan kantor disepakati
 
-> Acuan implementasi: backend utama Express.js dengan REST API, frontend mobile React Native untuk **Android saja** dikerjakan terpisah. Tiga lokasi kantor, kategori pegawai KPID/KI, matriks izin lokasi, radius 50 meter, dan izin masuk/pulang di kantor berbeda yang sama-sama diizinkan adalah **kebutuhan yang telah disepakati**. Koordinat belum ditentukan. Angka target, threshold, dan pilihan teknologi lainnya tetap **usulan** yang perlu divalidasi (lihat bagian 15). Status implementasi dan keputusan teknis awal tercatat di bagian 17; keberadaan kode belum membuktikan akurasi model atau kesiapan operasional.
+> Acuan implementasi: backend utama Express.js dengan REST API, frontend mobile React Native untuk **Android saja** dikerjakan terpisah. Tiga lokasi kantor, kategori pegawai KPID/KI, matriks izin lokasi, radius 50 meter, dan izin masuk/pulang di kantor berbeda yang sama-sama diizinkan adalah **kebutuhan yang telah disepakati**. Koordinat pusat dari pin pengguna tercatat pada bagian 17 dan di-seed melalui migration 007. Angka target, threshold, dan pilihan teknologi lainnya tetap **usulan** yang perlu divalidasi (lihat bagian 15). Status implementasi dan keputusan teknis awal tercatat di bagian 17; keberadaan kode belum membuktikan akurasi model atau kesiapan operasional.
 
 ## 1. Ringkasan
 
@@ -441,3 +441,27 @@ Migration 007 mengisi pusat kantor yang belum memiliki koordinat maupun polygon.
 Migration ini tidak mengaktifkan kantor atau mengisi batas akurasi/umur lokasi GPS. Admin harus menentukan kebijakan GPS dan mengaktifkan kantor sebelum absensi digunakan. Kebijakan kategori tetap: KPID boleh di Diskominfo dan KPID; KI boleh di Diskominfo dan KI. Izin kategori diperiksa bersama polygon dan batas jarak geography 50 meter. Polygon antar kantor yang berdekatan dapat beririsan; sistem menentukan kantor dari lokasi dan izin kategori pengguna. Ketepatan pin terhadap titik absensi fisik tetap perlu diuji di lokasi.
 
 Verifikasi setelah penetapan pin: 33 tes unit/kontrak/worker dan 70 tes integrasi lulus pada database PostGIS serta Redis sementara. Pengujian mencakup koordinat tiga kantor, polygon valid berjarak 50 meter, izin kategori, preservasi konfigurasi lama, dan migrasi berulang. Typecheck, format, pemeriksaan arsitektur, dan build TypeScript lulus. Migration 007 belum diterapkan pada database lokal/server pengguna; jalankan migrasi pada environment tujuan.
+
+
+### 17.10 Perbaikan QA 22 Oktober 2026: checksum, enrollment, dan jadwal
+
+Migrator menulis checksum LF untuk migrasi baru. Saat memeriksa ledger lama, migrator menerima checksum dari isi SQL yang sama dengan line ending LF atau CRLF. Checksum ledger lama tidak diubah, migrasi lama tidak dijalankan ulang, dan perubahan isi SQL tetap ditolak. Git mengunci migrations/*.sql ke LF. Jangan mengedit SQL historis atau mengganti checksum ledger secara manual untuk melewati pemeriksaan.
+
+Migration 008 menambahkan users.face_enrollment_version dengan nilai awal 0 tanpa mengubah template lama. Enrollment membaca versi saat mulai, lalu memeriksa ulang versi, akun, perangkat, dan template ACTIVE/PENDING di dalam transaksi sebelum menyimpan hasil inferensi. Reset admin dan penyimpanan enrollment baru menaikkan versi. Request yang kehilangan versi menerima HTTP 409 FACE_ENROLLMENT_CHANGED; mobile harus memulai enrollment baru dengan challenge baru. Template yang muncul dari writer lain juga ditolak dengan FACE_ALREADY_ENROLLED.
+
+Migration 009 menambahkan constraint bahwa starts_at dan ends_at berada pada work_date yang sama di Asia/Jakarta. API menolak jadwal lintas tanggal dengan HTTP 400 VALIDATION_ERROR. Timestamp UTC tetap diterima jika tanggal WIB-nya sesuai. Jadwal lintas tengah malam belum didukung.
+
+Sebelum deploy, periksa jadwal lama pada database tujuan:
+
+~~~sql
+SELECT id, user_id, work_date, starts_at, ends_at
+FROM work_schedules
+WHERE (starts_at AT TIME ZONE 'Asia/Jakarta')::date <> work_date
+   OR (ends_at AT TIME ZONE 'Asia/Jakarta')::date <> work_date;
+~~~
+
+Jika ada hasil, hentikan rollout dan minta pemilik jadwal menentukan koreksinya. Migrasi tidak menghapus, menggeser jadwal, atau mengubah riwayat absensi. Migration 009 menolak data tersebut dan seluruh migrasi yang masih pending di batch yang sama dibatalkan. Setelah data diselesaikan sesuai persetujuan operasional, retry migrasi.
+
+Untuk deployment, hentikan penerimaan request enrollment baru dan tunggu request pada semua replika versi lama selesai sebelum mengganti versi. Jalankan npm run db:migrate:production memakai build baru, lalu start replika baru. Kolom 008 dan constraint 009 bersifat additive; tidak perlu menghapusnya ketika rollback image. Namun, versi lama mengembalikan bug enrollment dan tidak memahami seluruh variasi checksum lama, sehingga rollback ke versi rentan bukan pemulihan yang aman untuk operasi biometrik. Jika perlu rollback darurat, pertahankan enrollment tidak tersedia sampai versi perbaikan aktif kembali. Jangan menghapus kolom atau constraint pada database berisi data.
+
+Verifikasi 22 Oktober 2026: 44 tes unit/kontrak/worker serta 82 tes integrasi lulus pada PostgreSQL/PostGIS dan Redis sementara. Tes mencakup ledger LF/CRLF tanpa perubahan checksum lama, penolakan perubahan SQL, rollback migrasi saat jadwal lama lintas tanggal ditemukan, batas tanggal WIB/UTC, reset saat inferensi, enrollment paralel, dan perubahan status akun/perangkat/template sebelum penyimpanan. Typecheck, formatting, pemeriksaan arsitektur dan build TypeScript lulus. Database aplikasi lokal/server belum dimigrasikan; migrasi baru hanya diuji pada database sementara yang sudah dihapus.
