@@ -16,8 +16,13 @@ async function readMigrations(directory: URL) {
   if (!names.length) throw new Error('No SQL migrations found. Include migrations in the image.');
   return Promise.all(
     names.map(async (name) => {
-      const sql = await readFile(new URL(name, directory), 'utf8');
-      return { name, sql, checksum: createHash('sha256').update(sql).digest('hex') };
+      const original = await readFile(new URL(name, directory), 'utf8');
+      const sql = original.replaceAll('\r\n', '\n');
+      const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+      const checksum = digest(sql);
+      // Existing ledgers retain their original bytes' checksum across Windows/Linux.
+      const checksums = new Set([checksum, digest(sql.replaceAll('\n', '\r\n')), digest(original)]);
+      return { name, sql, checksum, checksums };
     }),
   );
 }
@@ -44,8 +49,8 @@ export async function verifyDatabaseSchema(
     'SELECT name,checksum FROM schema_migrations',
   );
   const applied = new Map(rows.map((row) => [row.name, row.checksum]));
-  for (const { name, checksum } of migrationPlan(migrations, applied)) {
-    if (applied.get(name) !== checksum) throw new SchemaVerificationError(name);
+  for (const { name, checksums } of migrationPlan(migrations, applied)) {
+    if (!checksums.has(applied.get(name) ?? '')) throw new SchemaVerificationError(name);
   }
 }
 
@@ -67,10 +72,10 @@ export async function migrateDatabase(
     );
     const known = new Map(ledger.rows.map((row) => [row.name, row.checksum]));
     const applied: string[] = [];
-    for (const { name, sql, checksum } of migrationPlan(migrations, known)) {
+    for (const { name, sql, checksum, checksums } of migrationPlan(migrations, known)) {
       const old = await db.query('SELECT checksum FROM schema_migrations WHERE name=$1', [name]);
       if (old.rowCount) {
-        if (old.rows[0].checksum !== checksum)
+        if (!checksums.has(old.rows[0].checksum))
           throw new Error(`Applied migration changed: ${name}`);
         continue;
       }

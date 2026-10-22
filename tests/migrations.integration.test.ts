@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { setTimeout } from 'node:timers/promises';
 import { copyFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -46,6 +46,57 @@ afterAll(async () => {
 });
 
 describe('database migrations', () => {
+  it.each(['LF', 'CRLF'])(
+    'preserves a legacy %s ledger across line-ending changes and rejects SQL edits',
+    async (format) => {
+      fixtureDirectory = await mkdtemp(join(tmpdir(), 'absensi-eol-upgrade-'));
+      const lf =
+        'CREATE TABLE preserved_note(id int PRIMARY KEY);\nINSERT INTO preserved_note VALUES (1);\n';
+      const crlf = lf.replaceAll('\n', '\r\n');
+      const original = format === 'LF' ? lf : crlf;
+      const name = '001_line_endings.sql';
+      // Simulate the byte-based checksums written by the previous migrator.
+      await pool.query(
+        'CREATE TABLE schema_migrations(name text PRIMARY KEY,checksum text NOT NULL,applied_at timestamptz DEFAULT now())',
+      );
+      await pool.query(original);
+      await pool.query('INSERT INTO schema_migrations(name,checksum) VALUES($1,$2)', [
+        name,
+        createHash('sha256').update(original).digest('hex'),
+      ]);
+      const ledger = (await pool.query('SELECT * FROM schema_migrations')).rows;
+      await writeFile(join(fixtureDirectory, name), format === 'LF' ? crlf : lf);
+      const directory = pathToFileURL(fixtureDirectory + '/');
+      expect(await migrateDatabase(pool, directory)).toEqual([]);
+      await expect(verifyDatabaseSchema(pool, directory)).resolves.toBeUndefined();
+      expect((await pool.query('SELECT * FROM schema_migrations')).rows).toEqual(ledger);
+      expect((await pool.query('SELECT * FROM preserved_note')).rows).toEqual([{ id: 1 }]);
+      await writeFile(join(fixtureDirectory, name), lf.replace('VALUES (1)', 'VALUES (2)'));
+      await expect(migrateDatabase(pool, directory)).rejects.toThrow(
+        'Applied migration changed: ' + name,
+      );
+      await expect(verifyDatabaseSchema(pool, directory)).rejects.toThrow(
+        'Missing or changed migration: ' + name,
+      );
+      expect((await pool.query('SELECT * FROM schema_migrations')).rows).toEqual(ledger);
+      expect((await pool.query('SELECT * FROM preserved_note')).rows).toEqual([{ id: 1 }]);
+    },
+  );
+
+  it('writes canonical LF checksums for new migrations even from a CRLF checkout', async () => {
+    fixtureDirectory = await mkdtemp(join(tmpdir(), 'absensi-eol-new-'));
+    const lf = 'CREATE TABLE canonical_note(id int);\n';
+    await writeFile(join(fixtureDirectory, '001_canonical.sql'), lf.replaceAll('\n', '\r\n'));
+    const directory = pathToFileURL(fixtureDirectory + '/');
+    expect(await migrateDatabase(pool, directory)).toEqual(['001_canonical.sql']);
+    expect((await pool.query('SELECT checksum FROM schema_migrations')).rows[0].checksum).toBe(
+      createHash('sha256').update(lf).digest('hex'),
+    );
+    await writeFile(join(fixtureDirectory, '001_canonical.sql'), lf);
+    await expect(verifyDatabaseSchema(pool, directory)).resolves.toBeUndefined();
+    expect(await migrateDatabase(pool, directory)).toEqual([]);
+  });
+
   it('upgrades the portable baseline to PostGIS without changing existing coordinates or data', async () => {
     fixtureDirectory = await mkdtemp(join(tmpdir(), 'absensi-portable-upgrade-'));
     for (const name of ['001_initial_postgres.sql', '002_sso.sql', '003_office_coordinates.sql']) {
