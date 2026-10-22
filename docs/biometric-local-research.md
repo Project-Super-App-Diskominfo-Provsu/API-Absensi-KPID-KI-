@@ -29,6 +29,7 @@ Atur `.env` lokal:
 
 ```dotenv
 NODE_ENV=development
+FACE_ALLOW_RESEARCH_MODELS=true
 FACE_MANIFEST_PATH=./models/research/manifest.json
 FACE_MODEL_VERSION=research-buffalo-sc-minifasnet-v2-v1
 FACE_WORKER_URL=http://localhost:8000
@@ -56,11 +57,56 @@ Hasil yang diharapkan: HTTP `200` dengan `ready: true`. API dijalankan terpisah 
 
 ## Batas paket dan langkah berikutnya
 
-- Manifest berlabel `RESEARCH_ONLY`. Loader menolaknya kecuali caller mengizinkan riset; server dan CLI hanya mengizinkan ketika `NODE_ENV` bukan `production`. Jangan mengubah environment server untuk melewati batas tersebut.
+- Manifest berlabel `RESEARCH_ONLY`. Loader menolaknya kecuali caller mengizinkan riset. Server dan CLI pada `NODE_ENV=production` memerlukan opt-in eksplisit `FACE_ALLOW_RESEARCH_MODELS=true` untuk evaluasi staging. Nilai `false` menolak model riset juga di development. Mode Node tidak perlu diubah.
 - Jangan menghapus label riset untuk menjadikan paket ini model produksi. Penggunaan operasional membutuhkan izin bobot yang sesuai atau model pengganti beserta integrasi dan pengujian ulang.
 - Template model ini tidak boleh dianggap kompatibel dengan model produksi lain. Perubahan bobot/preprocessing membutuhkan versi baru dan enrollment ulang.
 - Selanjutnya uji foto enrollment dan foto sesi berbeda dari peserta yang menyetujui pengujian, pasangan orang berbeda, foto cetak/layar, variasi cahaya, dan perangkat Android target. Tiga orang cukup untuk pemeriksaan awal, bukan bukti akurasi produksi.
 - Kalibrasi menetapkan threshold match, review, liveness, dan kualitas. Nilai deteksi 0.5/NMS 0.4 serta referensi kualitas pada preset adalah konfigurasi eksperimen, bukan threshold penerimaan absensi yang telah dibuktikan.
+
+## Evaluasi staging Dokploy
+
+Gunakan staging terisolasi dengan akun peserta uji yang menyetujui pengujian, bukan absensi operasional. Flag evaluasi tidak mengubah lisensi bobot. `NODE_ENV=production` mengatur perilaku runtime aplikasi dan tidak berarti eksperimen model harus dilarang seluruhnya.
+
+1. Jalankan `npm run worker:setup:research` di komputer pengembangan. Kirim empat file `detector.onnx`, `recognizer.onnx`, `pad.onnx`, dan `manifest.json` dari `models/research` ke direktori server khusus, misalnya `/opt/absensi-models/research`. Gunakan transfer file privat. Bobot dan foto peserta tidak dimasukkan Git. Pastikan user non-root container dapat membaca direktori serta file tersebut.
+2. Redeploy image dari branch `dev` yang sudah mendukung flag evaluasi.
+3. Jika memakai Compose repo, isi environment deployment:
+
+```dotenv
+FACE_ALLOW_RESEARCH_MODELS=true
+FACE_MODELS_PATH=/opt/absensi-models
+FACE_WORKER_MANIFEST_PATH=/app/models/research/manifest.json
+FACE_MODEL_VERSION=research-buffalo-sc-minifasnet-v2-v1
+```
+
+`FACE_WORKER_TOKEN` pada API dan worker harus sama, minimal 32 karakter. `BIOMETRIC_KEY_BASE64` pada API harus terisi key 32 byte yang di-encode base64. Jangan mengganti key yang sudah mengenkripsi template.
+
+Jalankan dari root deployment di host server, menggunakan project Compose yang sama dengan Dokploy. Ganti `NAMA_PROJECT_DOKPLOY` dengan nama sebenarnya:
+
+```sh
+docker compose -p NAMA_PROJECT_DOKPLOY -f compose.yaml --profile biometrics up -d --build --wait face-worker
+docker compose -p NAMA_PROJECT_DOKPLOY -f compose.yaml logs --tail=100 face-worker
+docker compose -p NAMA_PROJECT_DOKPLOY -f compose.yaml exec face-worker node dist/worker/check-cli.js
+docker compose -p NAMA_PROJECT_DOKPLOY -f compose.yaml exec face-worker node -e 'fetch("http://127.0.0.1:8000/ready",{headers:{authorization:"Bearer "+process.env.FACE_WORKER_TOKEN}}).then(async r=>{console.log(r.status,await r.text());process.exitCode=r.ok?0:1}).catch(()=>process.exitCode=1)'
+```
+
+Nama project yang salah dapat membuat deployment kedua. Hindari menjalankan Compose dari terminal dalam container API. Jika environment API berubah, redeploy service API melalui Dokploy juga.
+
+Jika deployment memakai Application Dockerfile, buat service worker tersendiri dengan image API yang sama, start command `node dist/worker/server.js`, dan environment:
+
+```dotenv
+NODE_ENV=production
+FACE_ALLOW_RESEARCH_MODELS=true
+FACE_MANIFEST_PATH=/app/models/research/manifest.json
+FACE_WORKER_PORT=8000
+```
+
+Pasang `/opt/absensi-models` ke `/app/models` secara read-only dan isi shared token yang sama. Hubungkan worker dan API ke jaringan privat yang sama; isi `FACE_WORKER_URL` API dengan hostname worker yang dapat dijangkau pada port 8000. Atur health check service worker ke `/ready` port 8000 dengan bearer token; jangan mewarisi health check image API port 3000. Tidak perlu port atau domain publik untuk worker.
+
+Readiness worker HTTP 200 membuktikan file model berhasil dimuat. Itu belum membuktikan endpoint absensi dapat menerima request: API tetap memerlukan empat threshold, versi model yang sama, key biometrik, perangkat disetujui, enrollment disetujui, kantor aktif, serta jadwal peserta. Threshold kosong tetap menghasilkan `FACE_NOT_CONFIGURED`; flag evaluasi tidak mengisi atau melewati threshold tersebut.
+
+Setelah foto peserta tersedia, lakukan pilot dengan foto enrollment dan sesi uji terpisah, catat distribusi similarity/kualitas/PAD serta salah terima/tolak, lalu tetapkan threshold uji yang terdokumentasi. Jangan mengisi semua threshold dengan nol untuk mengejar keberhasilan request. Setelah itu uji check-in/out, wajah orang berbeda, spoof, lokasi di luar batas, lokasi kantor kategori lain, pengulangan request, dan logout/perangkat dicabut. Data pilot terbatas belum membuktikan tingkat akurasi produksi.
+
+Untuk menutup evaluasi, set `FACE_ALLOW_RESEARCH_MODELS=false` dan redeploy worker. Penggunaan paket riset akan kembali ditolak; login/admin API tetap berjalan. Jangan menghapus label riset pada manifest agar paket terlihat sebagai model operasional.
 
 Sumber:
 

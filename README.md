@@ -137,7 +137,7 @@ Format error:
 
 ## Worker wajah dan model
 
-Untuk eksperimen lokal, tersedia [setup model dan manifest otomatis](docs/biometric-local-research.md) melalui `npm run worker:setup:research`, lalu `npm run worker:check`. Paket riset menggunakan bobot nyata dan ditolak saat worker memakai `NODE_ENV=production`; paket ini bukan konfigurasi absensi operasional.
+Untuk eksperimen, tersedia [setup model dan manifest otomatis](docs/biometric-local-research.md) melalui `npm run worker:setup:research`, lalu `npm run worker:check`. Paket riset menggunakan bobot nyata. Worker dengan `NODE_ENV=production` menolaknya secara default; evaluasi staging terisolasi dapat mengaktifkan `FACE_ALLOW_RESEARCH_MODELS=true` secara eksplisit. Flag ini tidak mengubah izin penggunaan bobot atau membuktikan akurasi; paket ini bukan konfigurasi absensi operasional.
 
 Worker memuat tiga file ONNX pada startup: SCRFD dengan lima landmark, ArcFace embedding 512 dimensi, dan classifier PAD. File model serta lisensi penggunaannya disediakan operator. Source library berlisensi terbuka tidak otomatis memberi izin memakai bobot model. Lihat [kebijakan model InsightFace](https://github.com/deepinsight/insightface/blob/master/python-package/docs/model_zoo.md).
 

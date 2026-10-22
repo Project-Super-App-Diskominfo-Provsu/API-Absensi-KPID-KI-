@@ -114,7 +114,7 @@ SELECT PostGIS_Version();
 
 ## Worker wajah opsional
 
-Setup otomatis untuk eksperimen lokal dijelaskan pada [panduan biometrik riset](biometric-local-research.md). Paket `RESEARCH_ONLY` tersebut tidak dapat digunakan oleh worker production pada Compose ini. Deployment operasional memerlukan model dengan izin penggunaan yang sesuai, manifest yang cocok, dan kalibrasi.
+Setup otomatis serta evaluasi staging dijelaskan pada [panduan biometrik riset](biometric-local-research.md#evaluasi-staging-dokploy). Paket `RESEARCH_ONLY` ditolak secara default saat worker memakai `NODE_ENV=production`; evaluasi staging terisolasi dapat mengaktifkan `FACE_ALLOW_RESEARCH_MODELS=true` secara eksplisit tanpa mengubah mode Node. Deployment operasional tetap memerlukan model dengan izin penggunaan yang sesuai, manifest yang cocok, dan kalibrasi.
 
 Untuk staging login saja, profil ini tidak perlu diaktifkan. API tetap menolak operasi wajah ketika worker belum tersedia. Untuk mengaktifkan biometrik:
 

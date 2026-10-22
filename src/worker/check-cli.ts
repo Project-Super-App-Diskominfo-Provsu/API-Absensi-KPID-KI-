@@ -1,10 +1,11 @@
 import { OnnxFaceEngine } from './engine.js';
+import { researchModelsAllowed } from './config.js';
 
 try {
   const path = process.env.FACE_MANIFEST_PATH;
   if (!path) throw new Error('FACE_MANIFEST_PATH is not configured');
   const engine = await OnnxFaceEngine.load(path, {
-    allowResearch: process.env.NODE_ENV !== 'production',
+    allowResearch: researchModelsAllowed(),
   });
   await engine.close();
   console.log(

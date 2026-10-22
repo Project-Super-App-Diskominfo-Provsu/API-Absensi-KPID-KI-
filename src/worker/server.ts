@@ -6,7 +6,13 @@ import { z } from 'zod';
 import { upload, validateImage } from '../shared/files/image-upload.js';
 import { hash } from '../shared/security/crypto.js';
 import { OnnxFaceEngine, ModelInputError } from './engine.js';
+import { researchModelsAllowed } from './config.js';
 const logger = pino();
+const allowResearch = researchModelsAllowed();
+if (allowResearch && process.env.NODE_ENV === 'production')
+  logger.warn(
+    'Research models explicitly enabled for evaluation; not approved for operational attendance',
+  );
 const token = z.string().min(32).parse(process.env.FACE_WORKER_TOKEN);
 const port = z.coerce
   .number()
@@ -19,7 +25,7 @@ let engine: OnnxFaceEngine | undefined;
 if (process.env.FACE_MANIFEST_PATH) {
   try {
     engine = await OnnxFaceEngine.load(process.env.FACE_MANIFEST_PATH, {
-      allowResearch: process.env.NODE_ENV !== 'production',
+      allowResearch,
     });
     logger.info('Face models loaded');
   } catch (error) {

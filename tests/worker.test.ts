@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import sharp from 'sharp';
 import { hash } from '../src/shared/security/crypto.js';
 import { OnnxFaceEngine } from '../src/worker/engine.js';
+import { researchModelsAllowed } from '../src/worker/config.js';
 import {
   arcfaceLandmarks,
   miniFasNetCrop,
@@ -156,6 +157,22 @@ afterAll(async () => {
   if (folder) await rm(folder, { recursive: true, force: true });
 });
 describe('ONNX worker', () => {
+  it('requires explicit opt-in for research evaluation under production Node settings', () => {
+    expect(researchModelsAllowed({ NODE_ENV: 'production' })).toBe(false);
+    expect(
+      researchModelsAllowed({ NODE_ENV: 'production', FACE_ALLOW_RESEARCH_MODELS: 'true' }),
+    ).toBe(true);
+    expect(
+      researchModelsAllowed({ NODE_ENV: 'production', FACE_ALLOW_RESEARCH_MODELS: 'false' }),
+    ).toBe(false);
+    expect(researchModelsAllowed({ NODE_ENV: 'development' })).toBe(true);
+    expect(
+      researchModelsAllowed({ NODE_ENV: 'development', FACE_ALLOW_RESEARCH_MODELS: 'false' }),
+    ).toBe(false);
+    expect(() =>
+      researchModelsAllowed({ NODE_ENV: 'production', FACE_ALLOW_RESEARCH_MODELS: 'yes' }),
+    ).toThrow();
+  });
   it('runs detector, alignment, recognition and PAD with real ONNX Runtime sessions', async () => {
     const engine = await OnnxFaceEngine.load(manifestPath);
     const pixels = Buffer.alloc(640 * 640 * 3);

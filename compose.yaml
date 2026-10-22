@@ -61,11 +61,12 @@ services:
     environment:
       NODE_ENV: production
       FACE_WORKER_PORT: "8000"
+      FACE_ALLOW_RESEARCH_MODELS: ${FACE_ALLOW_RESEARCH_MODELS:-false}
       FACE_WORKER_TOKEN: ${FACE_WORKER_TOKEN:-}
-      FACE_MANIFEST_PATH: /app/models/manifest.json
+      FACE_MANIFEST_PATH: ${FACE_WORKER_MANIFEST_PATH:-/app/models/manifest.json}
     volumes:
       - type: bind
-        source: ./models
+        source: ${FACE_MODELS_PATH:-./models}
         target: /app/models
         read_only: true
         bind:
