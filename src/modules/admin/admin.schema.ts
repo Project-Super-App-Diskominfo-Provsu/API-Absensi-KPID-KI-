@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { MIN_PASSWORD_LENGTH } from '../../shared/security/password.js';
+import { pagination } from '../../shared/validation/pagination.js';
 const userFieldsSchema = {
   employee_number: z.string().trim().min(1).max(50),
   name: z.string().trim().min(1).max(200),
@@ -60,3 +61,43 @@ export const scheduleSchema = z
   );
 
 export const scheduleQuerySchema = z.object({ from: z.iso.date(), to: z.iso.date() }).strict();
+
+const rangeFields = { from: z.iso.date(), to: z.iso.date() };
+export const userListQuerySchema = pagination
+  .extend({
+    q: z.string().trim().max(100).optional(),
+    employee_category_code: z.enum(['KPID', 'KI']).optional(),
+    role: userFieldsSchema.role.optional(),
+    active: z
+      .enum(['true', 'false'])
+      .transform((v) => v === 'true')
+      .optional(),
+  })
+  .strict();
+export const adminScheduleQuerySchema = pagination
+  .extend({ ...rangeFields, user_id: z.uuid().optional() })
+  .strict()
+  .refine((v) => v.from <= v.to, 'from must not be after to.');
+export const adminAttendanceQuerySchema = pagination
+  .extend({
+    ...rangeFields,
+    user_id: z.uuid().optional(),
+    office_id: z.uuid().optional(),
+    type: z.enum(['CHECK_IN', 'CHECK_OUT']).optional(),
+    status: z.enum(['PRESENT', 'LATE', 'EARLY_LEAVE', 'ON_TIME']).optional(),
+  })
+  .strict()
+  .refine((v) => v.from <= v.to, 'from must not be after to.');
+export const patchScheduleSchema = z
+  .object({
+    work_date: z.iso.date().optional(),
+    starts_at: z.iso.datetime({ offset: true }).optional(),
+    ends_at: z.iso.datetime({ offset: true }).optional(),
+    grace_minutes: z.number().int().min(0).max(120).optional(),
+    reason: z.string().trim().min(5).max(500),
+  })
+  .strict()
+  .refine(
+    (v) => Object.keys(v).some((k) => k !== 'reason'),
+    'At least one schedule field is required.',
+  );

@@ -5,6 +5,8 @@ import { audit } from '../../database/audit.js';
 import { fail } from '../../shared/errors/api-error.js';
 import { hash, encrypt, verifyDeviceSignature } from '../../shared/security/crypto.js';
 import type { User } from '../auth/auth.model.js';
+import type { z } from 'zod';
+import type { reviewListQuerySchema } from '../../shared/validation/pagination.js';
 import { managedUser } from '../admin/admin.service.js';
 import { activeDevice } from '../device/device.service.js';
 import { consumeAttendanceChallenge } from '../device/device.model.js';
@@ -127,13 +129,17 @@ export async function enrollFace(
   });
 }
 
-export async function listPendingFaceEnrollments(pool: Pool, actor: User) {
-  const result = await findPendingFaceEnrollments(
+export async function listPendingFaceEnrollments(
+  pool: Pool,
+  actor: User,
+  query: z.infer<typeof reviewListQuerySchema>,
+) {
+  return findPendingFaceEnrollments(
     pool,
     actor.role === 'SUPER_ADMIN',
     actor.employee_category_code,
+    query,
   );
-  return result.rows;
 }
 
 export async function reviewFaceEnrollment(

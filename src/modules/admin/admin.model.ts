@@ -1,5 +1,12 @@
 import type { Db } from '../../database/client.js';
 import { userFields, type User } from '../auth/auth.model.js';
+import { queryPage } from '../../database/page.js';
+import type { z } from 'zod';
+import type {
+  userListQuerySchema,
+  adminScheduleQuerySchema,
+  adminAttendanceQuerySchema,
+} from './admin.schema.js';
 
 export interface Unit {
   id: string;
@@ -40,12 +47,97 @@ export async function findUsersPaginated(
   db: Db,
   isSuperAdmin: boolean,
   categoryCode: string | null,
-  limit: number,
-  offset: number,
+  query: z.infer<typeof userListQuerySchema>,
 ) {
-  return db.query<User>(
-    `SELECT ${userFields} FROM users WHERE ($1::boolean OR (employee_category_code=$2 AND role IN ('EMPLOYEE','VERIFIER'))) ORDER BY created_at DESC LIMIT $3 OFFSET $4`,
-    [isSuperAdmin, categoryCode, limit, offset],
+  return queryPage<User>(
+    db,
+    `SELECT ${userFields},created_at FROM users WHERE ($1::boolean OR (employee_category_code=$2 AND role IN ('EMPLOYEE','VERIFIER')))
+    AND ($3::text IS NULL OR name ILIKE $3 OR employee_number ILIKE $3 OR email ILIKE $3)
+    AND ($4::text IS NULL OR employee_category_code=$4) AND ($5::text IS NULL OR role=$5) AND ($6::boolean IS NULL OR active=$6)`,
+    [
+      isSuperAdmin,
+      categoryCode,
+      query.q ? '%' + query.q.replace(/[\\%_]/g, '\\$&') + '%' : null,
+      query.employee_category_code ?? null,
+      query.role ?? null,
+      query.active ?? null,
+    ],
+    'created_at DESC,id DESC',
+    query.limit,
+    query.offset,
+  );
+}
+
+export function findAdminAttendance(
+  db: Db,
+  actor: User,
+  query: z.infer<typeof adminAttendanceQuerySchema>,
+) {
+  return queryPage(
+    db,
+    `SELECT a.id,a.user_id,u.name,u.employee_number,a.schedule_id,a.office_id,a.type,a.server_time,a.status,a.office_snapshot,a.distance_m,a.employee_category_at_event
+    FROM attendances a JOIN users u ON u.id=a.user_id
+    WHERE ($1::boolean OR (u.employee_category_code=$2 AND a.employee_category_at_event=$2 AND u.role IN ('EMPLOYEE','VERIFIER')))
+    AND a.server_time>=($3::date::timestamp AT TIME ZONE 'Asia/Jakarta') AND a.server_time<(($4::date+1)::timestamp AT TIME ZONE 'Asia/Jakarta')
+    AND ($5::uuid IS NULL OR a.user_id=$5) AND ($6::uuid IS NULL OR a.office_id=$6)
+    AND ($7::text IS NULL OR a.type=$7) AND ($8::text IS NULL OR a.status=$8)`,
+    [
+      actor.role === 'SUPER_ADMIN',
+      actor.employee_category_code,
+      query.from,
+      query.to,
+      query.user_id ?? null,
+      query.office_id ?? null,
+      query.type ?? null,
+      query.status ?? null,
+    ],
+    'server_time DESC,id DESC',
+    query.limit,
+    query.offset,
+  );
+}
+
+export function findAdminSchedules(
+  db: Db,
+  actor: User,
+  query: z.infer<typeof adminScheduleQuerySchema>,
+) {
+  return queryPage(
+    db,
+    `SELECT s.id,s.user_id,u.name,u.employee_number,s.work_date::text,s.starts_at,s.ends_at,s.grace_minutes FROM work_schedules s JOIN users u ON u.id=s.user_id
+    WHERE ($1::boolean OR (u.employee_category_code=$2 AND u.role IN ('EMPLOYEE','VERIFIER'))) AND s.work_date BETWEEN $3 AND $4 AND ($5::uuid IS NULL OR s.user_id=$5)`,
+    [
+      actor.role === 'SUPER_ADMIN',
+      actor.employee_category_code,
+      query.from,
+      query.to,
+      query.user_id ?? null,
+    ],
+    'work_date DESC,id DESC',
+    query.limit,
+    query.offset,
+  );
+}
+
+export function findScheduleById(db: Db, id: string, lock = false) {
+  return db.query<WorkSchedule>(
+    `SELECT id,user_id,work_date::text,starts_at,ends_at,grace_minutes FROM work_schedules WHERE id=$1${lock ? ' FOR UPDATE' : ''}`,
+    [id],
+  );
+}
+
+export function findScheduleAttendance(db: Db, id: string) {
+  return db.query('SELECT 1 FROM attendances WHERE schedule_id=$1 LIMIT 1', [id]);
+}
+
+export function updateSchedule(
+  db: Db,
+  id: string,
+  data: { work_date: string; starts_at: string; ends_at: string; grace_minutes: number },
+) {
+  return db.query(
+    'UPDATE work_schedules SET work_date=$2,starts_at=$3,ends_at=$4,grace_minutes=$5 WHERE id=$1 RETURNING id,user_id,work_date::text,starts_at,ends_at,grace_minutes',
+    [id, data.work_date, data.starts_at, data.ends_at, data.grace_minutes],
   );
 }
 
@@ -104,10 +196,14 @@ export async function insertUnit(db: Db, name: string) {
 }
 
 export async function findAuditLogs(db: Db, limit: number, offset: number) {
-  return db.query<AuditLog>('SELECT * FROM audit_logs ORDER BY id DESC LIMIT $1 OFFSET $2', [
+  return queryPage<AuditLog>(
+    db,
+    'SELECT id,actor_id,action,target_id,detail,created_at FROM audit_logs',
+    [],
+    'id DESC',
     limit,
     offset,
-  ]);
+  );
 }
 
 export async function insertWorkSchedule(

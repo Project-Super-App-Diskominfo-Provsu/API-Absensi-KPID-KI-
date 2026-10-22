@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { Pool } from 'pg';
 import type { Config } from '../../config/env.js';
 import { currentUser } from '../auth/auth.middleware.js';
+import { reviewListQuerySchema } from '../../shared/validation/pagination.js';
 import {
   enrollFace,
   listPendingFaceEnrollments,
@@ -25,8 +26,12 @@ export function createFaceController(pool: Pool, config: Config, engine: FaceEng
 
     async listEnrollments(req: Request, res: Response) {
       const actor = currentUser(req);
-      const data = await listPendingFaceEnrollments(pool, actor);
-      res.json({ data });
+      const result = await listPendingFaceEnrollments(
+        pool,
+        actor,
+        reviewListQuerySchema.parse(req.query),
+      );
+      res.json({ data: result.data, meta: result.meta });
     },
 
     async review(req: Request, res: Response) {

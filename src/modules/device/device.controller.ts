@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { Pool } from 'pg';
 import { currentUser } from '../auth/auth.middleware.js';
+import { reviewListQuerySchema } from '../../shared/validation/pagination.js';
 import {
   bindDevice,
   getUserDevices,
@@ -29,8 +30,8 @@ export function createDeviceController(pool: Pool) {
 
     async adminList(req: Request, res: Response) {
       const actor = currentUser(req);
-      const data = await getAdminDevices(pool, actor);
-      res.json({ data });
+      const result = await getAdminDevices(pool, actor, reviewListQuerySchema.parse(req.query));
+      res.json({ data: result.data, meta: result.meta });
     },
 
     async adminUpdate(req: Request, res: Response) {

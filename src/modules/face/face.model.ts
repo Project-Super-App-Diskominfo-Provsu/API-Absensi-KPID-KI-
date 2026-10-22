@@ -1,4 +1,7 @@
 import type { Db } from '../../database/client.js';
+import { queryPage } from '../../database/page.js';
+import type { z } from 'zod';
+import type { reviewListQuerySchema } from '../../shared/validation/pagination.js';
 
 export interface FaceTemplate {
   id: string;
@@ -58,19 +61,16 @@ export async function findPendingFaceEnrollments(
   db: Db,
   isSuperAdmin: boolean,
   categoryCode: string | null,
+  query: z.infer<typeof reviewListQuerySchema>,
 ) {
-  return db.query<{
-    id: string;
-    user_id: string;
-    model_version: string;
-    quality_score: number;
-    status: string;
-    created_at: string;
-    name: string;
-  }>(
+  return queryPage(
+    db,
     `SELECT f.id,f.user_id,f.model_version,f.quality_score,f.status,f.created_at,u.name FROM face_templates f JOIN users u ON u.id=f.user_id
-    WHERE f.status='PENDING' AND ($1::boolean OR (u.employee_category_code=$2 AND u.role IN ('EMPLOYEE','VERIFIER'))) ORDER BY f.created_at LIMIT 100`,
-    [isSuperAdmin, categoryCode],
+    WHERE f.status=$3 AND ($1::boolean OR (u.employee_category_code=$2 AND u.role IN ('EMPLOYEE','VERIFIER'))) AND ($4::uuid IS NULL OR f.user_id=$4)`,
+    [isSuperAdmin, categoryCode, query.status ?? 'PENDING', query.user_id ?? null],
+    'created_at DESC,id DESC',
+    query.limit,
+    query.offset,
   );
 }
 

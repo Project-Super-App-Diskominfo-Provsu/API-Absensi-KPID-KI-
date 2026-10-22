@@ -16,7 +16,20 @@ import {
   findAuditLogs,
   insertWorkSchedule,
   findWorkSchedulesByUserAndRange,
+  findAdminAttendance,
+  findAdminSchedules,
+  findScheduleById,
+  findScheduleAttendance,
+  updateSchedule,
 } from './admin.model.js';
+import {
+  scheduleSchema,
+  type userListQuerySchema,
+  type adminScheduleQuerySchema,
+  type adminAttendanceQuerySchema,
+  type patchScheduleSchema,
+} from './admin.schema.js';
+import type { z } from 'zod';
 
 export async function managedUser(db: Db, actor: User, id: string): Promise<User> {
   const row = await findUserForUpdate(db, id);
@@ -35,20 +48,76 @@ export async function managedUser(db: Db, actor: User, id: string): Promise<User
   return user;
 }
 
-export async function getMeProfile(pool: Pool, user: User) {
+export async function getMeProfile(pool: Db, user: User) {
   const face = await findUserFaceTemplates(pool, user.id);
   return { ...user, face_enrollments: face.rows };
 }
 
-export async function listUsers(pool: Pool, actor: User, limit: number, offset: number) {
-  const rows = await findUsersPaginated(
+export async function listUsers(
+  pool: Pool,
+  actor: User,
+  query: z.infer<typeof userListQuerySchema>,
+) {
+  return findUsersPaginated(
     pool,
     actor.role === 'SUPER_ADMIN',
     actor.employee_category_code,
-    limit,
-    offset,
+    query,
   );
-  return rows.rows;
+}
+
+export async function getManagedProfile(pool: Pool, actor: User, id: string) {
+  return transaction(pool, async (db) => getMeProfile(db, await managedUser(db, actor, id)));
+}
+export function listAdminAttendance(
+  pool: Pool,
+  actor: User,
+  query: z.infer<typeof adminAttendanceQuerySchema>,
+) {
+  return findAdminAttendance(pool, actor, query);
+}
+export function listAdminSchedules(
+  pool: Pool,
+  actor: User,
+  query: z.infer<typeof adminScheduleQuerySchema>,
+) {
+  return findAdminSchedules(pool, actor, query);
+}
+export async function patchSchedule(
+  pool: Pool,
+  actor: User,
+  id: string,
+  input: z.infer<typeof patchScheduleSchema>,
+) {
+  return transaction(pool, async (db) => {
+    const initial = await findScheduleById(db, id);
+    if (!initial.rowCount) fail(404, 'NOT_FOUND', 'Jadwal tidak ditemukan.');
+    await managedUser(db, actor, initial.rows[0]!.user_id);
+    const current = (await findScheduleById(db, id, true)).rows[0]!;
+    if ((await findScheduleAttendance(db, id)).rowCount)
+      fail(409, 'SCHEDULE_LOCKED', 'Jadwal sudah digunakan untuk absensi dan tidak dapat diubah.');
+    const { reason, ...fields } = input;
+    const merged = {
+      ...current,
+      starts_at: new Date(current.starts_at).toISOString(),
+      ends_at: new Date(current.ends_at).toISOString(),
+      ...fields,
+    };
+    const validated = scheduleSchema.parse({
+      user_id: current.user_id,
+      work_date: merged.work_date,
+      starts_at: merged.starts_at,
+      ends_at: merged.ends_at,
+      grace_minutes: merged.grace_minutes,
+    });
+    const updated = await updateSchedule(db, id, validated);
+    await audit(db, actor.id, 'SCHEDULE_UPDATED', id, {
+      reason,
+      before: current,
+      after: updated.rows[0],
+    });
+    return updated.rows[0];
+  });
 }
 
 export async function createUser(
@@ -141,8 +210,7 @@ export async function createUnit(pool: Pool, actorId: string, name: string) {
 }
 
 export async function listAuditLogs(pool: Pool, limit: number, offset: number) {
-  const result = await findAuditLogs(pool, limit, offset);
-  return result.rows;
+  return findAuditLogs(pool, limit, offset);
 }
 
 export async function createSchedule(

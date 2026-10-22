@@ -32,6 +32,14 @@ export function errorHandler(logger: Logger): ErrorRequestHandler {
       error: {
         code: error?.code ?? 'INTERNAL_ERROR',
         message: error?.message ?? 'Terjadi kesalahan server.',
+        ...(err instanceof ZodError
+          ? {
+              details: err.issues.map((issue) => ({
+                field: issue.path.join('.'),
+                message: issue.message,
+              })),
+            }
+          : {}),
       },
       request_id: res.locals.requestId,
     });

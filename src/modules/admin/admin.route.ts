@@ -11,6 +11,10 @@ export function adminRoutes(pool: Pool) {
 
   router.get('/me', controller.me);
   router.get('/admin/users', controller.listUsers);
+  router.get('/admin/users/:id', controller.getUser);
+  router.get('/admin/attendances', controller.listAttendance);
+  router.get('/admin/schedules', controller.listAdminSchedules);
+  router.patch('/admin/schedules/:id', controller.patchSchedule);
   router.post('/admin/users', controller.createUser);
   router.patch('/admin/users/:id', controller.updateUser);
   router.get('/admin/units', controller.listUnits);

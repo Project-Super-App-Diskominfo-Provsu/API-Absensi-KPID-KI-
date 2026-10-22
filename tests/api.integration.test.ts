@@ -1550,6 +1550,154 @@ describe('admin web integration', () => {
   });
 });
 
+describe('admin reporting and schedule contracts', () => {
+  async function categoryAdmin(category = 'KPID') {
+    const id = (
+      await pool.query(
+        "INSERT INTO users(employee_number,name,email,password_hash,role,employee_category_code) VALUES($1,'Scoped admin',$2,$3,'ADMIN',$4) RETURNING id",
+        [randomUUID(), randomUUID() + '@example.test', passwordHash, category],
+      )
+    ).rows[0].id;
+    return (await issueSession(pool, config, id, randomUUID())).access_token;
+  }
+  it('paginates scoped users with filters and preserves total beyond the last page', async () => {
+    const scoped = await categoryAdmin();
+    const result = await request(app)
+      .get('/api/v1/admin/users')
+      .query({ q: 'Pegawai', active: 'true', limit: 1 })
+      .auth(scoped, { type: 'bearer' });
+    expect(result.status, result.text).toBe(200);
+    expect(result.body.meta).toEqual({ limit: 1, offset: 0, total: 1 });
+    expect(result.body.data[0].id).toBe(user);
+    expect(result.body.data[0].password_hash).toBeUndefined();
+    const page = await request(app)
+      .get('/api/v1/admin/users')
+      .query({ offset: 999 })
+      .auth(scoped, { type: 'bearer' });
+    expect(page.body.data).toEqual([]);
+    expect(page.body.meta.total).toBe(1);
+    expect(
+      (
+        await request(app)
+          .get('/api/v1/admin/users/' + admin)
+          .auth(scoped, { type: 'bearer' })
+      ).status,
+    ).toBe(403);
+    const detail = await request(app)
+      .get('/api/v1/admin/users/' + user)
+      .auth(scoped, { type: 'bearer' });
+    expect(detail.status).toBe(200);
+    expect(detail.body.data.password_hash).toBeUndefined();
+  });
+  it('scopes attendance by both current and historical category and never returns biometric material', async () => {
+    expect((await (await capture()).send()).status).toBe(201);
+    const kpid = await categoryAdmin(),
+      ki = await categoryAdmin('KI');
+    const date = (await pool.query("SELECT (now() AT TIME ZONE 'Asia/Jakarta')::date::text AS day"))
+      .rows[0].day;
+    const endpoint = '/api/v1/admin/attendances?from=' + date + '&to=' + date;
+    const result = await request(app).get(endpoint).auth(kpid, { type: 'bearer' });
+    expect(result.status, result.text).toBe(200);
+    expect(result.body.meta.total).toBe(1);
+    expect(result.body.data[0].user_id).toBe(user);
+    expect(JSON.stringify(result.body)).not.toContain('encrypted_embedding');
+    expect((await request(app).get(endpoint).auth(ki, { type: 'bearer' })).body.meta.total).toBe(0);
+    expect((await request(app).get(endpoint).auth(access, { type: 'bearer' })).status).toBe(403);
+    expect(
+      (
+        await request(app)
+          .get(endpoint + '&status=EARLY_LEAVE')
+          .auth(kpid, { type: 'bearer' })
+      ).body.meta.total,
+    ).toBe(0);
+    await pool.query("UPDATE users SET employee_category_code='KI' WHERE id=$1", [user]);
+    expect((await request(app).get(endpoint).auth(kpid, { type: 'bearer' })).body.meta.total).toBe(
+      0,
+    );
+    expect((await request(app).get(endpoint).auth(ki, { type: 'bearer' })).body.meta.total).toBe(0);
+    expect(
+      (await request(app).get(endpoint).auth(adminAccess, { type: 'bearer' })).body.meta.total,
+    ).toBe(1);
+  });
+  it('allows scoped schedule edits with an audit reason and locks schedules once attendance exists', async () => {
+    const kpid = await categoryAdmin(),
+      ki = await categoryAdmin('KI');
+    const date = (await pool.query("SELECT (now() AT TIME ZONE 'Asia/Jakarta')::date::text AS day"))
+      .rows[0].day;
+    const list = await request(app)
+      .get('/api/v1/admin/schedules')
+      .query({ from: date, to: date, user_id: user })
+      .auth(kpid, { type: 'bearer' });
+    expect(list.status, list.text).toBe(200);
+    expect(list.body.meta.total).toBe(1);
+    const id = list.body.data[0].id;
+    expect(
+      (
+        await request(app)
+          .patch('/api/v1/admin/schedules/' + id)
+          .auth(ki, { type: 'bearer' })
+          .send({ grace_minutes: 5, reason: 'Update grace period' })
+      ).status,
+    ).toBe(403);
+    const updated = await request(app)
+      .patch('/api/v1/admin/schedules/' + id)
+      .auth(kpid, { type: 'bearer' })
+      .send({ grace_minutes: 5, reason: 'Update grace period' });
+    expect(updated.status, updated.text).toBe(200);
+    expect(updated.body.data.grace_minutes).toBe(5);
+    expect(
+      (
+        await pool.query(
+          "SELECT 1 FROM audit_logs WHERE action='SCHEDULE_UPDATED' AND target_id=$1",
+          [id],
+        )
+      ).rowCount,
+    ).toBe(1);
+    expect((await (await capture()).send()).status).toBe(201);
+    const locked = await request(app)
+      .patch('/api/v1/admin/schedules/' + id)
+      .auth(adminAccess, { type: 'bearer' })
+      .send({ grace_minutes: 10, reason: 'Attempt history rewrite' });
+    expect(locked.status).toBe(409);
+    expect(locked.body.error.code).toBe('SCHEDULE_LOCKED');
+  });
+  it('returns field validation details without reflecting submitted passwords', async () => {
+    const result = await request(app)
+      .post('/api/v1/admin/users')
+      .auth(adminAccess, { type: 'bearer' })
+      .send({ password: 'secret' });
+    expect(result.status).toBe(400);
+    expect(
+      result.body.error.details.some((v: { field: string }) => v.field === 'employee_number'),
+    ).toBe(true);
+    expect(JSON.stringify(result.body)).not.toContain('secret');
+  });
+  it('paginates device/enrollment approvals without leaking other category records or embeddings', async () => {
+    const kpid = await categoryAdmin(),
+      ki = await categoryAdmin('KI');
+    const devices = await request(app)
+      .get('/api/v1/admin/devices?status=ACTIVE')
+      .auth(kpid, { type: 'bearer' });
+    expect(devices.status, devices.text).toBe(200);
+    expect(devices.body.meta.total).toBe(1);
+    expect(devices.body.data[0].public_key).toBeUndefined();
+    expect(
+      (await request(app).get('/api/v1/admin/devices').auth(ki, { type: 'bearer' })).body.meta
+        .total,
+    ).toBe(0);
+    const faces = await request(app)
+      .get('/api/v1/admin/face-enrollments?status=ACTIVE')
+      .auth(kpid, { type: 'bearer' });
+    expect(faces.status, faces.text).toBe(200);
+    expect(faces.body.meta.total).toBe(1);
+    expect(faces.body.data[0].encrypted_embedding).toBeUndefined();
+    const audit = await request(app)
+      .get('/api/v1/admin/audit-logs?limit=1&offset=999999')
+      .auth(adminAccess, { type: 'bearer' });
+    expect(audit.status).toBe(400);
+  });
+});
+
 describe('Google native and browser login integration', () => {
   const origin = 'https://admin.example.test';
   const googleConfig = {

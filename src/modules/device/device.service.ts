@@ -4,6 +4,8 @@ import { audit } from '../../database/audit.js';
 import { fail } from '../../shared/errors/api-error.js';
 import { hash, token, verifyDeviceSignature } from '../../shared/security/crypto.js';
 import type { User } from '../auth/auth.model.js';
+import type { z } from 'zod';
+import type { reviewListQuerySchema } from '../../shared/validation/pagination.js';
 import { managedUser } from '../admin/admin.service.js';
 import {
   findActiveDeviceById,
@@ -57,13 +59,12 @@ export async function getUserDevices(pool: Pool, userId: string) {
   return result.rows;
 }
 
-export async function getAdminDevices(pool: Pool, actor: User) {
-  const result = await findAdminDevices(
-    pool,
-    actor.role === 'SUPER_ADMIN',
-    actor.employee_category_code,
-  );
-  return result.rows;
+export async function getAdminDevices(
+  pool: Pool,
+  actor: User,
+  query: z.infer<typeof reviewListQuerySchema>,
+) {
+  return findAdminDevices(pool, actor.role === 'SUPER_ADMIN', actor.employee_category_code, query);
 }
 
 export async function updateDevice(

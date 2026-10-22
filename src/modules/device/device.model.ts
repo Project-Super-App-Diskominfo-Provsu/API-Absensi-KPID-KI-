@@ -1,4 +1,7 @@
 import type { Db } from '../../database/client.js';
+import { queryPage } from '../../database/page.js';
+import type { z } from 'zod';
+import type { reviewListQuerySchema } from '../../shared/validation/pagination.js';
 
 export interface Device {
   id: string;
@@ -47,17 +50,21 @@ export async function findDevicesByUserId(db: Db, userId: string) {
   );
 }
 
-export async function findAdminDevices(db: Db, isSuperAdmin: boolean, categoryCode: string | null) {
-  return db.query<{
-    id: string;
-    user_id: string;
-    platform: string;
-    status: string;
-    bound_at: string;
-  }>(
-    `SELECT d.id,d.user_id,d.platform,d.status,d.bound_at FROM devices d JOIN users u ON u.id=d.user_id
-    WHERE ($1::boolean OR (u.employee_category_code=$2 AND u.role IN ('EMPLOYEE','VERIFIER'))) ORDER BY d.bound_at DESC LIMIT 100`,
-    [isSuperAdmin, categoryCode],
+export async function findAdminDevices(
+  db: Db,
+  isSuperAdmin: boolean,
+  categoryCode: string | null,
+  query: z.infer<typeof reviewListQuerySchema>,
+) {
+  return queryPage(
+    db,
+    `SELECT d.id,d.user_id,u.name,u.employee_number,d.platform,d.status,d.bound_at FROM devices d JOIN users u ON u.id=d.user_id
+    WHERE ($1::boolean OR (u.employee_category_code=$2 AND u.role IN ('EMPLOYEE','VERIFIER')))
+    AND ($3::uuid IS NULL OR d.user_id=$3) AND ($4::text IS NULL OR d.status=$4)`,
+    [isSuperAdmin, categoryCode, query.user_id ?? null, query.status ?? null],
+    'bound_at DESC,id DESC',
+    query.limit,
+    query.offset,
   );
 }
 
