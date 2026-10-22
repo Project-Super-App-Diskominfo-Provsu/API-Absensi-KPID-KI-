@@ -36,6 +36,8 @@ Isi `DATABASE_URL` dan `REDIS_URL` ke layanan yang sudah tersedia serta isi `JWT
 node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ```
 
+Untuk PostgreSQL/PostGIS dan Redis lokal melalui Docker, ikuti [panduan datastore lokal](docs/local-datastores.md). Kedua file Compose tersedia di repo dan terpisah dari deployment API.
+
 Lalu:
 
 ```powershell
