@@ -106,6 +106,8 @@ Readiness worker HTTP 200 membuktikan file model berhasil dimuat. Itu belum memb
 
 Setelah foto peserta tersedia, lakukan pilot dengan foto enrollment dan sesi uji terpisah, catat distribusi similarity/kualitas/PAD serta salah terima/tolak, lalu tetapkan threshold uji yang terdokumentasi. Jangan mengisi semua threshold dengan nol untuk mengejar keberhasilan request. Setelah itu uji check-in/out, wajah orang berbeda, spoof, lokasi di luar batas, lokasi kantor kategori lain, pengulangan request, dan logout/perangkat dicabut. Data pilot terbatas belum membuktikan tingkat akurasi produksi.
 
+Permintaan pemilik proyek menetapkan `FACE_MATCH_THRESHOLD=0.80` sebagai batas awal. Ini cutoff cosine similarity, bukan persentase akurasi atau probabilitas identitas benar. Skor di bawah 0.80 tidak membuat attendance event diterima; skor pada rentang review menghasilkan `NEEDS_REVIEW`, bukan absensi berhasil. Skor 0.80 atau lebih hanya lolos pencocokan jika pemeriksaan lain juga lolos. Batas yang sama digunakan untuk konsistensi foto enrollment. Nilai ini belum dikalibrasi dan bisa menolak foto orang yang benar; verifikasi pada pilot sebelum memutuskan mempertahankannya. Threshold review harus lebih kecil dari 0.80, sedangkan threshold PAD dan kualitas tetap harus ditentukan secara terpisah.
+
 Untuk menutup evaluasi, set `FACE_ALLOW_RESEARCH_MODELS=false` dan redeploy worker. Penggunaan paket riset akan kembali ditolak; login/admin API tetap berjalan. Jangan menghapus label riset pada manifest agar paket terlihat sebagai model operasional.
 
 Sumber:
