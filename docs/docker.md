@@ -114,6 +114,8 @@ SELECT PostGIS_Version();
 
 ## Worker wajah opsional
 
+Setup otomatis untuk eksperimen lokal dijelaskan pada [panduan biometrik riset](biometric-local-research.md). Paket `RESEARCH_ONLY` tersebut tidak dapat digunakan oleh worker production pada Compose ini. Deployment operasional memerlukan model dengan izin penggunaan yang sesuai, manifest yang cocok, dan kalibrasi.
+
 Untuk staging login saja, profil ini tidak perlu diaktifkan. API tetap menolak operasi wajah ketika worker belum tersedia. Untuk mengaktifkan biometrik:
 
 1. Siapkan direktori `models` berisi `manifest.json` dan bobot model yang sah. Path relatif pada manifest dihitung dari direktori manifest; misalnya `recognition.onnx` menunjuk `/app/models/recognition.onnx` di dalam container. Path absolut, jika digunakan, harus menunjuk lokasi di dalam container. Konfirmasikan izin baca untuk user non-root container.

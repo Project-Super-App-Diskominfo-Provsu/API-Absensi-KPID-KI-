@@ -17,6 +17,8 @@
     "db:migrate:production": "node --env-file-if-exists=.env dist/database/migrate-cli.js",
     "admin:create": "tsx --env-file-if-exists=.env scripts/create-admin.ts",
     "worker:dev": "tsx --env-file-if-exists=.env src/worker/server.ts",
+    "worker:setup:research": "tsx --env-file-if-exists=.env scripts/setup-face-models.ts",
+    "worker:check": "tsx --env-file-if-exists=.env src/worker/check-cli.ts",
     "worker:start": "node --env-file-if-exists=.env dist/worker/server.js",
     "format": "prettier --write src scripts tests vitest.config.ts vitest.integration.config.ts",
     "format:check": "prettier --check src scripts tests vitest.config.ts vitest.integration.config.ts",
