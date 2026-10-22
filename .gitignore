@@ -8,3 +8,5 @@ coverage/
 __pycache__/
 .venv/
 models/
+secrets/
+*firebase-adminsdk*.json

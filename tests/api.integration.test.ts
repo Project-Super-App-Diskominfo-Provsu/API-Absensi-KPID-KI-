@@ -15,6 +15,9 @@ import { attendanceInput } from '../src/modules/attendance/attendance.schema.js'
 import type { FaceEngine } from '../src/modules/face/face.types.js';
 import { issueSession, logoutUser } from '../src/modules/auth/auth.service.js';
 import { googleEmailForLinking } from '../src/modules/sso/google.service.js';
+import { processCheckInReminders } from '../src/modules/notification/notification.service.js';
+import { enqueueReminders, claimReminder } from '../src/modules/notification/notification.model.js';
+import type { ReminderMessage } from '../src/modules/notification/notification.sender.js';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 
@@ -2096,5 +2099,312 @@ describe('Google verified email first login', () => {
       .auth(adminAccess, { type: 'bearer' })
       .send({ auth_mode: 'SSO' });
     expect(scoped.status).toBe(403);
+  });
+});
+
+describe('FCM token lifecycle and check-in reminder worker', () => {
+  const pushConfig = {
+    ...config,
+    FCM_ENABLED: 'true' as const,
+    FIREBASE_PROJECT_ID: 'test-push-project',
+  };
+  const token = 'test-fcm-' + 'a'.repeat(80);
+  function at(time: string) {
+    const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jakarta' }).format(new Date());
+    return new Date(day + 'T' + time + '+07:00');
+  }
+  let sent: ReminderMessage[];
+  let scoped: ReturnType<typeof createApp>;
+  const sender = {
+    send: async (message: ReminderMessage) => {
+      sent.push(message);
+    },
+  };
+  async function register(value = token, bearer = access, target = device) {
+    return request(scoped)
+      .post('/api/v1/devices/' + target + '/push-token')
+      .auth(bearer, { type: 'bearer' })
+      .send({
+        token: value,
+        signature: sign(
+          null,
+          Buffer.from(
+            'push-token:' +
+              (bearer === adminAccess ? admin : user) +
+              ':' +
+              target +
+              ':' +
+              hash(value),
+          ),
+          pair.privateKey,
+        ).toString('base64'),
+      });
+  }
+  beforeEach(async () => {
+    sent = [];
+    scoped = createApp(pool, redis, pushConfig, engine);
+    await pool.query('UPDATE work_schedules SET starts_at=$2,grace_minutes=0 WHERE user_id=$1', [
+      user,
+      at('08:00:00'),
+    ]);
+  });
+  async function prepared() {
+    const r = await register();
+    expect(r.status, r.text).toBe(204);
+  }
+  const run = (time: string, transport = sender) =>
+    processCheckInReminders(pool, pushConfig, transport, () => at(time));
+  it('registers and rotates one token per approved device without exposing tokens in responses or audit', async () => {
+    await prepared();
+    const replacement = 'replacement-' + 'b'.repeat(80);
+    const result = await register(replacement);
+    expect(result.status).toBe(204);
+    expect(result.text).toBe('');
+    const rows = (await pool.query('SELECT token,token_hash,project_id FROM device_push_tokens'))
+      .rows;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      token: replacement,
+      project_id: pushConfig.FIREBASE_PROJECT_ID,
+      token_hash: hash(replacement),
+    });
+    const audit = JSON.stringify(
+      (await pool.query("SELECT detail FROM audit_logs WHERE action='PUSH_TOKEN_REGISTERED'")).rows,
+    );
+    expect(audit).not.toContain(token);
+    expect(audit).not.toContain(replacement);
+    expect(
+      (
+        await request(scoped)
+          .delete('/api/v1/devices/' + device + '/push-token')
+          .auth(access, { type: 'bearer' })
+      ).status,
+    ).toBe(204);
+    expect((await pool.query('SELECT 1 FROM device_push_tokens')).rowCount).toBe(0);
+  });
+  it('rejects unauthenticated, foreign, pending and disabled registrations', async () => {
+    expect(
+      (
+        await request(scoped)
+          .post('/api/v1/devices/' + device + '/push-token')
+          .send({ token })
+      ).status,
+    ).toBe(401);
+    expect((await register(token, adminAccess)).status).toBe(403);
+    expect(
+      (
+        await request(scoped)
+          .delete('/api/v1/devices/' + device + '/push-token')
+          .auth(adminAccess, { type: 'bearer' })
+      ).status,
+    ).toBe(403);
+    await pool.query("UPDATE devices SET status='PENDING' WHERE id=$1", [device]);
+    expect((await register()).status).toBe(403);
+    const disabled = await request(app)
+      .post('/api/v1/devices/' + device + '/push-token')
+      .auth(access, { type: 'bearer' })
+      .send({ token, signature: 'invalid-signature' });
+    expect(disabled.status).toBe(503);
+  });
+  it('rejects malformed tokens and prevents a token from being assigned to another device', async () => {
+    expect((await register('bad token with spaces')).status).toBe(400);
+    await prepared();
+    const other = (
+      await pool.query(
+        "INSERT INTO devices(user_id,public_key,platform,status) VALUES($1,$2,'ANDROID','ACTIVE') RETURNING id",
+        [admin, publicKey],
+      )
+    ).rows[0].id;
+    const result = await register(token, adminAccess, other);
+    expect(result.status).toBe(409);
+    expect(result.body.error.code).toBe('FCM_TOKEN_IN_USE');
+  });
+  it('requires proof of the approved device key when registering or changing the push destination', async () => {
+    const denied = await request(scoped)
+      .post('/api/v1/devices/' + device + '/push-token')
+      .auth(access, { type: 'bearer' })
+      .send({ token, signature: Buffer.alloc(64).toString('base64') });
+    expect(denied.status).toBe(403);
+    expect(denied.body.error.code).toBe('DEVICE_SIGNATURE_INVALID');
+    expect((await pool.query('SELECT 1 FROM device_push_tokens')).rowCount).toBe(0);
+  });
+  it('requires a MOBILE session for registration', async () => {
+    await pool.query("UPDATE refresh_sessions SET client_type='WEB' WHERE user_id=$1", [user]);
+    expect((await register()).status).toBe(403);
+  });
+  it('sends once at 07:55 WIB for an 08:00 deadline, never before', async () => {
+    await prepared();
+    await run('07:54:59');
+    expect(sent).toHaveLength(0);
+    await run('07:55:00');
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.deadline.toISOString()).toBe(at('08:00:00').toISOString());
+    await run('07:55:01');
+    expect(sent).toHaveLength(1);
+    expect(
+      (await pool.query('SELECT status,attempts FROM notification_deliveries')).rows[0],
+    ).toEqual({ status: 'SENT', attempts: 1 });
+  });
+  it('expires queued reminders at 08:00 WIB', async () => {
+    await prepared();
+    await run('07:54:00');
+    await run('08:00:00');
+    expect(sent).toHaveLength(0);
+    expect(
+      (await pool.query('SELECT status,last_error FROM notification_deliveries')).rows[0],
+    ).toEqual({ status: 'SKIPPED', last_error: 'EXPIRED' });
+  });
+  it('suppresses reminders after successful check-in', async () => {
+    await prepared();
+    await run('07:54:00');
+    const captured = await (await capture()).send();
+    expect(captured.status, captured.text).toBe(201);
+    await run('07:55:00');
+    expect(sent).toHaveLength(0);
+    expect(
+      (await pool.query('SELECT last_error FROM notification_deliveries')).rows[0].last_error,
+    ).toBe('ALREADY_CHECKED_IN');
+  });
+  it.each(['logout', 'inactive', 'revoked', 'unregistered', 'wrong-project'])(
+    'rechecks eligibility before sending: %s',
+    async (condition) => {
+      await prepared();
+      await run('07:54:00');
+      if (condition === 'logout')
+        await request(app).post('/api/v1/auth/logout').auth(access, { type: 'bearer' }).send({});
+      else if (condition === 'inactive')
+        await pool.query('UPDATE users SET active=false WHERE id=$1', [user]);
+      else if (condition === 'revoked')
+        await pool.query("UPDATE devices SET status='REVOKED' WHERE id=$1", [device]);
+      else if (condition === 'wrong-project')
+        await pool.query("UPDATE device_push_tokens SET project_id='another-project'");
+      else
+        await request(scoped)
+          .delete('/api/v1/devices/' + device + '/push-token')
+          .auth(access, { type: 'bearer' });
+      await run('07:55:00');
+      expect(sent).toHaveLength(0);
+      expect((await pool.query('SELECT status FROM notification_deliveries')).rows[0].status).toBe(
+        'SKIPPED',
+      );
+    },
+  );
+  it('retains notification eligibility across refresh token rotation', async () => {
+    const session = await issueSession(pool, config, user, randomUUID());
+    expect((await register(token, session.access_token)).status).toBe(204);
+    const rotated = await request(app)
+      .post('/api/v1/auth/refresh')
+      .send({ refresh_token: session.refresh_token });
+    expect(rotated.status, rotated.text).toBe(200);
+    await run('07:55:00');
+    expect(sent).toHaveLength(1);
+  });
+  it('updates the reminder time when an administrator changes the schedule before delivery', async () => {
+    await prepared();
+    await run('07:54:00');
+    await pool.query('UPDATE work_schedules SET starts_at=$2 WHERE user_id=$1', [
+      user,
+      at('08:30:00'),
+    ]);
+    await run('07:55:00');
+    expect(sent).toHaveLength(0);
+    await run('08:25:00');
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.deadline.toISOString()).toBe(at('08:30:00').toISOString());
+  });
+  it('moves a queued reminder to another work date before expiring the old deadline', async () => {
+    await prepared();
+    await run('07:54:00');
+    const deadline = new Date(at('08:00:00').getTime() + 86400000);
+    await pool.query(
+      `UPDATE work_schedules SET work_date=($2::timestamptz AT TIME ZONE 'Asia/Jakarta')::date,
+      starts_at=$2,ends_at=$2::timestamptz+interval '9 hours' WHERE user_id=$1`,
+      [user, deadline],
+    );
+    await run('08:00:00');
+    expect(sent).toHaveLength(0);
+    expect((await pool.query('SELECT status FROM notification_deliveries')).rows[0].status).toBe(
+      'PENDING',
+    );
+    await processCheckInReminders(
+      pool,
+      pushConfig,
+      sender,
+      () => new Date(deadline.getTime() - 300000),
+    );
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.deadline.toISOString()).toBe(deadline.toISOString());
+  });
+  it('retries transient failures with backoff and stops after three attempts', async () => {
+    await prepared();
+    let attempts = 0;
+    const failed = {
+      send: async () => {
+        attempts++;
+        throw { code: 'messaging/internal-error', message: 'DO_NOT_PERSIST_RAW_ERROR' };
+      },
+    };
+    await run('07:55:00', failed);
+    await run('07:55:04', failed);
+    expect(attempts).toBe(1);
+    await run('07:55:05', failed);
+    await run('07:55:15', failed);
+    await run('07:56:00', failed);
+    expect(attempts).toBe(3);
+    const row = (await pool.query('SELECT status,attempts,last_error FROM notification_deliveries'))
+      .rows[0];
+    expect(row).toEqual({ status: 'FAILED', attempts: 3, last_error: 'messaging/internal-error' });
+  });
+  it('removes only the invalid token that was sent, preserving a replacement registered in flight', async () => {
+    await prepared();
+    const replacement = 'replacement-' + 'c'.repeat(80);
+    const invalid = {
+      send: async () => {
+        expect((await register(replacement)).status).toBe(204);
+        throw { code: 'messaging/registration-token-not-registered' };
+      },
+    };
+    await run('07:55:00', invalid);
+    expect((await pool.query('SELECT token FROM device_push_tokens')).rows[0].token).toBe(
+      replacement,
+    );
+    expect((await pool.query('SELECT status FROM notification_deliveries')).rows[0].status).toBe(
+      'FAILED',
+    );
+  });
+  it('removes an invalid token without retrying it', async () => {
+    await prepared();
+    let attempts = 0;
+    await run('07:55:00', {
+      send: async () => {
+        attempts++;
+        throw { code: 'messaging/invalid-registration-token' };
+      },
+    });
+    await run('07:56:00');
+    expect(attempts).toBe(1);
+    expect(sent).toHaveLength(0);
+    expect((await pool.query('SELECT 1 FROM device_push_tokens')).rowCount).toBe(0);
+  });
+  it('claims jobs safely across concurrent workers', async () => {
+    await prepared();
+    const slow = {
+      send: async (message: ReminderMessage) => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        sent.push(message);
+      },
+    };
+    await Promise.all([run('07:55:00', slow), run('07:55:00', slow)]);
+    expect(sent).toHaveLength(1);
+  });
+  it('recovers expired worker leases using the same notification id', async () => {
+    await prepared();
+    await enqueueReminders(pool, pushConfig.FIREBASE_PROJECT_ID, at('07:54:00'));
+    const claimed = (await claimReminder(pool, at('07:55:00'))).rows[0];
+    await run('07:55:30');
+    expect(sent).toHaveLength(0);
+    await run('07:57:00');
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.notificationId).toBe(claimed!.id);
   });
 });

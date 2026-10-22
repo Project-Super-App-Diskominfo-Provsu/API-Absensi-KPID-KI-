@@ -26,6 +26,8 @@ const schema = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
     PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+    FCM_ENABLED: z.enum(['true', 'false']).default('false'),
+    FIREBASE_PROJECT_ID: z.string().default(''),
     ...databaseConfigSchema.shape,
     DB_MIGRATE_ON_START: z.enum(['true', 'false']).default('false'),
     REDIS_URL: serviceUrl(['redis:', 'rediss:']),

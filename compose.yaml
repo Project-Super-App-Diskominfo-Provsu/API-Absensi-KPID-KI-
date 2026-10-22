@@ -9,6 +9,8 @@ services:
     environment:
       NODE_ENV: production
       PORT: "3000"
+      FCM_ENABLED: ${FCM_ENABLED:-false}
+      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-}
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in the deployment environment or .env}
       DB_POOL_MAX: ${DB_POOL_MAX:-15}
       DB_MIGRATE_ON_START: ${DB_MIGRATE_ON_START:-true}
@@ -50,6 +52,45 @@ services:
       interval: 30s
       timeout: 5s
       start_period: 180s
+      retries: 3
+  notification-worker:
+    profiles: [notifications]
+    image: absensi-api:${APP_IMAGE_TAG:-local}
+    build:
+      context: .
+    command: ["node", "dist/notification-worker.js"]
+    init: true
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL}
+      DB_POOL_MAX: ${DB_POOL_MAX:-15}
+      FCM_ENABLED: ${FCM_ENABLED:-false}
+      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-}
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/firebase-admin.json
+      NOTIFICATION_WORKER_PORT: "8001"
+      NOTIFICATION_POLL_MS: ${NOTIFICATION_POLL_MS:-10000}
+    volumes:
+      - type: bind
+        source: ${GOOGLE_APPLICATION_CREDENTIALS:-./secrets/firebase-admin.json}
+        target: /run/secrets/firebase-admin.json
+        read_only: true
+        bind:
+          create_host_path: false
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    read_only: true
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    stop_grace_period: 25s
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8001/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
       retries: 3
   face-worker:
     profiles: [biometrics]

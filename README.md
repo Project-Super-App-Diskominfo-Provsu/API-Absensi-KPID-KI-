@@ -10,7 +10,9 @@ Tersedia: autentikasi JWT dengan refresh rotation dan pencabutan keluarga sesi s
 
 Ketiga kantor di-seed **nonaktif dengan pusat dari pin Google Maps pengguna dan polygon 50 meter** (migration 007, untuk kantor yang belum dikonfigurasi). Tidak ada akun atau password admin bawaan. Tidak ada model biometrik yang diunduh otomatis. Absensi belum dapat digunakan operasional sampai kantor, jadwal, perangkat, enrollment, model, dan threshold sudah siap.
 
-Belum tersedia: persetujuan koreksi/manual, penyelesaian administratif status `NEEDS_REVIEW`, ekspor CSV/XLSX, impor massal, push notification, integrasi Play Integrity, pengujian Google SSO dengan kredensial nyata, object storage, serta uji akurasi/PAD dan benchmark dengan model operasional. Jangan menganggap target FAR/FRR atau p95 pada PRD telah terbukti. Foto hanya diproses di memori dan tidak disimpan; bukti visual untuk review belum tersedia.
+Belum tersedia: persetujuan koreksi/manual, penyelesaian administratif status `NEEDS_REVIEW`, ekspor CSV/XLSX, impor massal, integrasi Play Integrity, pengujian Google SSO/FCM dengan perangkat nyata, object storage, serta uji akurasi/PAD dan benchmark dengan model operasional. Jangan menganggap target FAR/FRR atau p95 pada PRD telah terbukti. Foto hanya diproses di memori dan tidak disimpan; bukti visual untuk review belum tersedia.
+
+Pengingat check-in FCM tersedia melalui worker terpisah dan token perangkat bersignature, diikat ke keluarga sesi Android. Untuk jadwal 08.00 WIB dengan toleransi 0, pengingat dikirim mulai 07.55 hanya bagi pegawai yang belum check-in. Fitur default nonaktif dan memerlukan migration 012. Lihat [kontrak FE dan deployment notifikasi](docs/fcm.md).
 
 ## Aturan lokasi
 

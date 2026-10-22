@@ -24,6 +24,7 @@ import { ApiError } from './shared/errors/api-error.js';
 import { errorHandler } from './middleware/error-handler.js';
 import { hash } from './shared/security/crypto.js';
 import { openapi } from './docs/openapi.js';
+import { notificationRoutes } from './modules/notification/notification.route.js';
 import { readCookie, WEB_REFRESH_COOKIE } from './modules/auth/auth.web.middleware.js';
 
 export function createApp(
@@ -189,6 +190,7 @@ export function createApp(
     officeRoutes(pool),
     adminRoutes(pool),
     deviceRoutes(pool),
+    notificationRoutes(pool, config),
     faceRoutes(pool, config, engine),
     attendanceRoutes(pool, config, engine),
   );

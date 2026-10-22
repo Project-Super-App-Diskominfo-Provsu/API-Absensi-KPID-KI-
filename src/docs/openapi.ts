@@ -184,6 +184,16 @@ export const openapi = {
         },
         [],
       ),
+      PushToken: object({
+        token: { type: 'string', minLength: 20, maxLength: 4096, pattern: '^[A-Za-z0-9:_.-]+$' },
+        signature: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 200,
+          description:
+            'Ed25519 base64 signature atas push-token:<user_id>:<device_id>:<sha256(token)>.',
+        },
+      }),
       OfficePatch: object(
         {
           name: str,
@@ -497,6 +507,16 @@ export const openapi = {
     },
     '/schedules': { get: operation('Jadwal pegawai yang login', { parameters: range }) },
     '/devices': { get: operation('Daftar perangkat sendiri') },
+    '/devices/{id}/push-token': {
+      post: operation(
+        'Daftarkan/perbarui token FCM milik perangkat Android aktif; memerlukan signature perangkat dan sesi MOBILE',
+        { id: true, body: 'PushToken', status: 204, empty: true },
+      ),
+      delete: operation(
+        'Hapus token notifikasi perangkat sendiri, termasuk perangkat yang dicabut',
+        { id: true, status: 204, empty: true },
+      ),
+    },
     '/devices/bind': {
       post: operation('Ajukan perangkat dengan bukti kepemilikan private key', {
         body: 'DeviceBind',

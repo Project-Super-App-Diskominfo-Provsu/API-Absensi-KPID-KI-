@@ -4,4 +4,6 @@ dist
 .env
 .env.*
 models
+secrets
+*firebase-adminsdk*.json
 coverage
