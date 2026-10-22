@@ -49,8 +49,8 @@ export async function findSsoIdentityByIssuerSubject(db: Db, issuer: string, sub
 }
 
 export async function findActiveSsoUserById(db: Db, userId: string) {
-  return db.query<{ id: string }>(
-    "SELECT id FROM users WHERE id=$1 AND active AND auth_mode IN ('SSO','BOTH') FOR UPDATE",
+  return db.query<{ id: string; role: string }>(
+    "SELECT id,role FROM users WHERE id=$1 AND active AND auth_mode IN ('SSO','BOTH') FOR UPDATE",
     [userId],
   );
 }

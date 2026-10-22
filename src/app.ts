@@ -19,10 +19,12 @@ import { type FaceEngine } from './modules/face/face.types.js';
 import { attendanceRoutes } from './modules/attendance/attendance.route.js';
 import { ssoRoutes } from './modules/sso/sso.route.js';
 import type { SsoProvider } from './modules/sso/sso.service.js';
+import type { GoogleProvider } from './modules/sso/google.service.js';
 import { ApiError } from './shared/errors/api-error.js';
 import { errorHandler } from './middleware/error-handler.js';
 import { hash } from './shared/security/crypto.js';
 import { openapi } from './docs/openapi.js';
+import { readCookie, WEB_REFRESH_COOKIE } from './modules/auth/auth.web.middleware.js';
 
 export function createApp(
   pool: Pool,
@@ -30,6 +32,7 @@ export function createApp(
   config: Config,
   engine: FaceEngine = new HttpFaceEngine(config),
   ssoProvider?: SsoProvider,
+  googleProvider?: GoogleProvider,
 ) {
   if (!redis.isReady) throw new Error('Connect Redis before creating the application.');
   const app = express();
@@ -63,11 +66,13 @@ export function createApp(
   const origins = config.CORS_ORIGINS.split(',')
     .map((v) => v.trim())
     .filter(Boolean);
+  if (config.WEB_AUTH_ENABLED === 'true') origins.push(config.ADMIN_WEB_ORIGIN);
   app.use(
     cors({
       origin: origins,
       methods: ['GET', 'POST', 'PATCH', 'DELETE'],
-      allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key', 'X-CSRF-Token'],
+      credentials: true,
     }),
   );
   app.get('/health', (_req, res) => res.json({ data: { status: 'ok' } }));
@@ -163,13 +168,21 @@ export function createApp(
       refresh: [
         limiter('absensi:refresh:ip:', 1000),
         limiter('absensi:refresh:token:', 30, (req) =>
-          hash(String(req.body?.refresh_token ?? '').slice(0, 100)),
+          hash(
+            String(req.body?.refresh_token ?? readCookie(req, WEB_REFRESH_COOKIE) ?? '').slice(
+              0,
+              100,
+            ),
+          ),
         ),
       ],
       password: [limiter('absensi:password:', 5, (req) => req.user!.id)],
     }),
   );
-  app.use('/api/v1', ssoRoutes(pool, config, limiter('absensi:sso:', 30), ssoProvider));
+  app.use(
+    '/api/v1',
+    ssoRoutes(pool, config, limiter('absensi:sso:', 300), ssoProvider, googleProvider),
+  );
   app.use('/api/v1', authMiddleware(pool, config));
   app.use(
     '/api/v1',

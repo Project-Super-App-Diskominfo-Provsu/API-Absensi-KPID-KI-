@@ -107,6 +107,8 @@ export function getAuthMethods(config: Config) {
     local: true,
     sso: config.SSO_ENABLED === 'true',
     sso_protocol: config.SSO_ENABLED === 'true' ? ('oidc' as const) : null,
+    google: config.GOOGLE_ENABLED === 'true',
+    web: config.WEB_AUTH_ENABLED === 'true',
   };
 }
 
@@ -177,6 +179,15 @@ export async function exchangeSsoCode(
     fail(401, 'SSO_LOGIN_FAILED', 'Issuer SSO tidak sesuai.');
   }
 
+  return sessionForSsoIdentity(pool, config, identity);
+}
+
+export async function sessionForSsoIdentity(
+  pool: Pool,
+  config: Config,
+  identity: { issuer: string; subject: string },
+  clientType: 'MOBILE' | 'WEB' = 'MOBILE',
+) {
   return transaction(pool, async (db) => {
     const mapping = await findSsoIdentityByIssuerSubject(db, identity.issuer, identity.subject);
     if (!mapping.rowCount) {
@@ -190,7 +201,9 @@ export async function exchangeSsoCode(
     const current = await findSsoIdentityMapping(db, identity.issuer, identity.subject, userId);
     if (!current.rowCount) fail(403, 'SSO_ACCOUNT_NOT_LINKED', 'Pemetaan akun SSO berubah.');
 
-    const session = await issueSession(db, config, userId, randomUUID());
+    if (clientType === 'WEB' && !['ADMIN', 'SUPER_ADMIN'].includes(active.rows[0]!.role))
+      fail(403, 'ADMIN_ACCESS_REQUIRED', 'Panel hanya untuk administrator.');
+    const session = await issueSession(db, config, userId, randomUUID(), undefined, clientType);
     await audit(db, userId, 'SSO_LOGIN', current.rows[0]!.id);
     return session;
   });
@@ -205,9 +218,16 @@ export async function linkSsoIdentity(
     subject: string;
     auth_mode: 'SSO' | 'BOTH';
     reason: string;
+    issuer?: string;
   },
 ) {
-  requireSso(config);
+  const issuers = [
+    config.SSO_ENABLED === 'true' ? config.SSO_ISSUER : '',
+    config.GOOGLE_ENABLED === 'true' ? 'https://accounts.google.com' : '',
+  ].filter(Boolean);
+  if (!issuers.length) fail(503, 'SSO_NOT_CONFIGURED', 'Penyedia SSO belum dikonfigurasi.');
+  const issuer = input.issuer ?? issuers[0]!;
+  if (!issuers.includes(issuer)) fail(400, 'SSO_ISSUER_INVALID', 'Issuer tidak dikonfigurasi.');
   if (actor.id === input.user_id) {
     fail(403, 'SELF_UPDATE_FORBIDDEN', 'Pemetaan akun sendiri memerlukan admin lain.');
   }
@@ -216,7 +236,7 @@ export async function linkSsoIdentity(
     const user = await findUserForSsoUpdate(db, input.user_id);
     if (!user.rowCount) fail(404, 'NOT_FOUND', 'Pegawai tidak ditemukan.');
 
-    const mapped = await insertSsoIdentity(db, input.user_id, config.SSO_ISSUER, input.subject);
+    const mapped = await insertSsoIdentity(db, input.user_id, issuer, input.subject);
     await updateUserAuthMode(db, input.user_id, input.auth_mode);
     await db.query(
       'UPDATE refresh_sessions SET revoked_at=COALESCE(revoked_at,now()) WHERE user_id=$1',

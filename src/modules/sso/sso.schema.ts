@@ -18,6 +18,7 @@ export const linkSsoIdentitySchema = z
     subject: z.string().min(1).max(255),
     auth_mode: z.enum(['SSO', 'BOTH']),
     reason: z.string().trim().min(5).max(500),
+    issuer: z.url().optional(),
   })
   .strict();
 

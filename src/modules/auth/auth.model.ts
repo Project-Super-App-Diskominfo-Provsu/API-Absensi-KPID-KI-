@@ -21,6 +21,8 @@ export interface RefreshSession {
   expires_at: Date;
   created_at: string;
   active?: boolean;
+  role: User['role'];
+  client_type: 'MOBILE' | 'WEB';
 }
 
 export const userFields =
@@ -36,8 +38,8 @@ export async function findUserByEmail(db: Db, email: string) {
 }
 
 export async function findActiveUserForShare(db: Db, userId: string, passwordHash: string) {
-  return db.query<{ id: string }>(
-    "SELECT id FROM users WHERE id=$1 AND active AND auth_mode IN ('LOCAL','BOTH') AND password_hash=$2 FOR SHARE",
+  return db.query<{ id: string; role: User['role'] }>(
+    "SELECT id,role FROM users WHERE id=$1 AND active AND auth_mode IN ('LOCAL','BOTH') AND password_hash=$2 FOR SHARE",
     [userId, passwordHash],
   );
 }
@@ -54,7 +56,7 @@ export async function findSessionByTokenHash(db: Db, tokenHash: string) {
 
 export async function findSessionWithUserForUpdate(db: Db, tokenHash: string) {
   return db.query<RefreshSession>(
-    `SELECT s.*,u.active FROM refresh_sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 FOR UPDATE OF s`,
+    `SELECT s.*,u.active,u.role FROM refresh_sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 FOR UPDATE OF s`,
     [tokenHash],
   );
 }
@@ -106,10 +108,11 @@ export async function insertRefreshSession(
   familyId: string,
   tokenHash: string,
   expiresAt?: Date,
+  clientType: 'MOBILE' | 'WEB' = 'MOBILE',
 ) {
   return db.query<{ id: string; expires_at: Date }>(
-    `INSERT INTO refresh_sessions(user_id,family_id,token_hash,expires_at)
-    VALUES($1,$2,$3,COALESCE($4::timestamptz,now()+interval '30 days')) RETURNING id,expires_at`,
-    [userId, familyId, tokenHash, expiresAt ?? null],
+    `INSERT INTO refresh_sessions(user_id,family_id,token_hash,expires_at,client_type)
+    VALUES($1,$2,$3,COALESCE($4::timestamptz,now()+interval '30 days'),$5) RETURNING id,expires_at`,
+    [userId, familyId, tokenHash, expiresAt ?? null, clientType],
   );
 }

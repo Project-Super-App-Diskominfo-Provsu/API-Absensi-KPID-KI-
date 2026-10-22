@@ -50,11 +50,12 @@ describe.skipIf(!process.env.TEST_LEGACY_DATABASE_URL)('legacy PostGIS upgrade',
       '007_office_map_centers.sql',
       '008_face_enrollment_version.sql',
       '009_same_day_schedules.sql',
+      '010_web_and_google_auth.sql',
     ]);
     expect(
       (
         await pool.query(
-          'SELECT * FROM schema_migrations WHERE name NOT IN ($1,$2,$3,$4,$5,$6,$7) ORDER BY name',
+          'SELECT * FROM schema_migrations WHERE name NOT IN ($1,$2,$3,$4,$5,$6,$7,$8) ORDER BY name',
           [
             '003_office_coordinates.sql',
             '004_postgis_geofencing.sql',
@@ -63,6 +64,7 @@ describe.skipIf(!process.env.TEST_LEGACY_DATABASE_URL)('legacy PostGIS upgrade',
             '007_office_map_centers.sql',
             '008_face_enrollment_version.sql',
             '009_same_day_schedules.sql',
+            '010_web_and_google_auth.sql',
           ],
         )
       ).rows,

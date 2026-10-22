@@ -1333,3 +1333,404 @@ describe('internal login hardening', () => {
     }
   });
 });
+
+describe('admin web integration', () => {
+  const origin = 'https://admin.example.test';
+  const webConfig = { ...config, WEB_AUTH_ENABLED: 'true' as const, ADMIN_WEB_ORIGIN: origin };
+  const webApp = () => createApp(pool, redis, webConfig, engine);
+  const cookie = (r: request.Response, name = 'absensi_web_refresh') => {
+    const values = r.headers['set-cookie'] as unknown as string[];
+    return values.find((v) => v.startsWith(name + '='))!.split(';')[0]!;
+  };
+  async function webLogin(scoped: ReturnType<typeof createApp>) {
+    const email = (await pool.query('SELECT email FROM users WHERE id=$1', [admin])).rows[0].email;
+    const result = await request(scoped)
+      .post('/api/v1/auth/web/login')
+      .set('Origin', origin)
+      .send({ email, password: 'test-password-123' });
+    expect(result.status, result.text).toBe(200);
+    return result;
+  }
+  it('keeps refresh tokens in HttpOnly cookies, rotates them, restores CSRF, and revokes replayed families', async () => {
+    const scoped = webApp(),
+      login = await webLogin(scoped),
+      first = cookie(login);
+    expect(login.body.data.refresh_token).toBeUndefined();
+    expect(login.headers['set-cookie']![0]).toContain('HttpOnly');
+    expect(login.headers['set-cookie']![0]).toContain('SameSite=Strict');
+    const csrf = await request(scoped)
+      .post('/api/v1/auth/web/session')
+      .set('Origin', origin)
+      .set('Cookie', first);
+    expect(csrf.status).toBe(200);
+    expect(csrf.body.data.csrf_token).toBe(login.body.data.csrf_token);
+    const refreshed = await request(scoped)
+      .post('/api/v1/auth/web/refresh')
+      .set('Origin', origin)
+      .set('Cookie', first)
+      .set('X-CSRF-Token', csrf.body.data.csrf_token);
+    expect(refreshed.status, refreshed.text).toBe(200);
+    expect(cookie(refreshed)).not.toBe(first);
+    expect(
+      (
+        await request(scoped)
+          .get('/api/v1/me')
+          .auth(login.body.data.access_token, { type: 'bearer' })
+      ).status,
+    ).toBe(401);
+    const replay = await request(scoped)
+      .post('/api/v1/auth/web/refresh')
+      .set('Origin', origin)
+      .set('Cookie', first)
+      .set('X-CSRF-Token', csrf.body.data.csrf_token);
+    expect(replay.status).toBe(401);
+    expect(
+      (
+        await request(scoped)
+          .get('/api/v1/me')
+          .auth(refreshed.body.data.access_token, { type: 'bearer' })
+      ).status,
+    ).toBe(401);
+  });
+  it('limits web sessions to eight hours without extending the absolute deadline on refresh', async () => {
+    const scoped = webApp(),
+      login = await webLogin(scoped),
+      first = cookie(login),
+      refresh = first.split('=')[1]!;
+    const initial = (
+      await pool.query('SELECT expires_at FROM refresh_sessions WHERE token_hash=$1', [
+        hash(refresh),
+      ])
+    ).rows[0].expires_at as Date;
+    expect(initial.getTime() - Date.now()).toBeGreaterThan(8 * 3600000 - 10000);
+    expect(initial.getTime() - Date.now()).toBeLessThanOrEqual(8 * 3600000);
+    const result = await request(scoped)
+      .post('/api/v1/auth/web/refresh')
+      .set('Origin', origin)
+      .set('Cookie', first)
+      .set('X-CSRF-Token', login.body.data.csrf_token);
+    expect(result.status, result.text).toBe(200);
+    const current = (
+      await pool.query('SELECT expires_at FROM refresh_sessions WHERE token_hash=$1', [
+        hash(cookie(result).split('=')[1]!),
+      ])
+    ).rows[0].expires_at as Date;
+    expect(current.getTime()).toBe(initial.getTime());
+    expect(
+      (
+        await request(scoped)
+          .post('/api/v1/auth/web/session')
+          .set('Origin', origin)
+          .set('Cookie', first + '; ' + first)
+      ).status,
+    ).toBe(401);
+  });
+  it('rejects employees, untrusted origins, and missing or wrong CSRF tokens', async () => {
+    const scoped = webApp();
+    const email = (await pool.query('SELECT email FROM users WHERE id=$1', [user])).rows[0].email;
+    expect(
+      (
+        await request(scoped)
+          .post('/api/v1/auth/web/login')
+          .set('Origin', origin)
+          .send({ email, password: 'test-password-123' })
+      ).status,
+    ).toBe(403);
+    const login = await webLogin(scoped);
+    for (const headers of [
+      { origin, csrf: '' },
+      { origin, csrf: 'wrong' },
+      { origin: 'https://evil.example', csrf: login.body.data.csrf_token },
+    ]) {
+      expect(
+        (
+          await request(scoped)
+            .post('/api/v1/auth/web/refresh')
+            .set('Origin', headers.origin)
+            .set('Cookie', cookie(login))
+            .set('X-CSRF-Token', headers.csrf)
+        ).status,
+      ).toBe(403);
+    }
+    expect(
+      (
+        await request(scoped)
+          .post('/api/v1/auth/web/session')
+          .set('Origin', 'https://evil.example')
+          .set('Cookie', cookie(login))
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await request(scoped)
+          .get('/api/v1/me')
+          .auth(login.body.data.access_token, { type: 'bearer' })
+      ).status,
+    ).toBe(200);
+  });
+  it('separates mobile and web refresh channels and logs out a web family', async () => {
+    const scoped = webApp(),
+      login = await webLogin(scoped),
+      first = cookie(login),
+      refresh = first.split('=')[1];
+    expect(
+      (await request(scoped).post('/api/v1/auth/refresh').send({ refresh_token: refresh })).status,
+    ).toBe(401);
+    const restored = await request(scoped)
+      .post('/api/v1/auth/web/session')
+      .set('Origin', origin)
+      .set('Cookie', first);
+    expect(restored.status).toBe(200);
+    const logout = await request(scoped)
+      .post('/api/v1/auth/web/logout')
+      .set('Origin', origin)
+      .set('Cookie', first)
+      .set('X-CSRF-Token', login.body.data.csrf_token);
+    expect(logout.status).toBe(204);
+    expect(
+      (
+        await request(scoped)
+          .get('/api/v1/me')
+          .auth(login.body.data.access_token, { type: 'bearer' })
+      ).status,
+    ).toBe(401);
+  });
+  it('sets Secure cookies in production behind a trusted proxy and permits credentialed CORS only for configured origins', async () => {
+    const scoped = createApp(
+      pool,
+      redis,
+      { ...webConfig, NODE_ENV: 'production', TRUST_PROXY: '127.0.0.1,::1' },
+      engine,
+    );
+    const email = (await pool.query('SELECT email FROM users WHERE id=$1', [admin])).rows[0].email;
+    const login = await request(scoped)
+      .post('/api/v1/auth/web/login')
+      .set('X-Forwarded-Proto', 'https')
+      .set('Origin', origin)
+      .send({ email, password: 'test-password-123' });
+    expect(login.status, login.text).toBe(200);
+    expect(login.headers['set-cookie']![0]).toContain('Secure');
+    const preflight = await request(scoped)
+      .options('/api/v1/auth/web/refresh')
+      .set('Origin', origin)
+      .set('Access-Control-Request-Method', 'POST')
+      .set('Access-Control-Request-Headers', 'X-CSRF-Token');
+    expect(preflight.headers['access-control-allow-origin']).toBe(origin);
+    expect(preflight.headers['access-control-allow-credentials']).toBe('true');
+    expect(
+      (
+        await request(scoped)
+          .options('/api/v1/auth/web/refresh')
+          .set('Origin', 'https://evil.example')
+          .set('Access-Control-Request-Method', 'POST')
+      ).headers['access-control-allow-origin'],
+    ).toBeUndefined();
+  });
+  it('denies a revoked or downgraded web administrator on session restore and refresh', async () => {
+    const scoped = webApp(),
+      login = await webLogin(scoped);
+    await pool.query("UPDATE users SET role='EMPLOYEE' WHERE id=$1", [admin]);
+    expect(
+      (
+        await request(scoped)
+          .post('/api/v1/auth/web/session')
+          .set('Origin', origin)
+          .set('Cookie', cookie(login))
+      ).status,
+    ).toBe(401);
+    expect(
+      (
+        await request(scoped)
+          .post('/api/v1/auth/web/refresh')
+          .set('Origin', origin)
+          .set('Cookie', cookie(login))
+          .set('X-CSRF-Token', login.body.data.csrf_token)
+      ).status,
+    ).toBe(401);
+  });
+});
+
+describe('Google native and browser login integration', () => {
+  const origin = 'https://admin.example.test';
+  const googleConfig = {
+    ...config,
+    GOOGLE_ENABLED: 'true' as const,
+    WEB_AUTH_ENABLED: 'true' as const,
+    ADMIN_WEB_ORIGIN: origin,
+    GOOGLE_WEB_CLIENT_ID: 'web.apps.googleusercontent.com',
+    GOOGLE_CLIENT_SECRET: 'fixture',
+    GOOGLE_REDIRECT_URI: 'https://api.example.test/api/v1/auth/web/google/callback',
+  };
+  const provider = {
+    authorizationUrl: async (flow: { state: string; nonce: string; code_challenge: string }) =>
+      'https://accounts.google.com/o/oauth2/v2/auth?' + new URLSearchParams(flow).toString(),
+    verifyCode: async (_flow: unknown, code: string, _verifier: string) => {
+      if (!['admin-code', 'employee-code'].includes(code)) throw new Error('Invalid code');
+      return {
+        issuer: 'https://accounts.google.com',
+        subject: code === 'admin-code' ? 'admin-subject' : 'employee-subject',
+      };
+    },
+    verifyIdToken: async (value: string, nonce: string) => {
+      const [subject, expected] = value.split('|');
+      if (expected !== nonce || !subject) throw new Error('Invalid ID token');
+      return { issuer: 'https://accounts.google.com', subject };
+    },
+  };
+  async function prepare() {
+    await pool.query("UPDATE users SET auth_mode='BOTH' WHERE id IN ($1,$2)", [user, admin]);
+    await pool.query(
+      "INSERT INTO sso_identities(user_id,issuer,subject) VALUES($1,'https://accounts.google.com','admin-subject'),($2,'https://accounts.google.com','employee-subject')",
+      [admin, user],
+    );
+    return createApp(pool, redis, googleConfig, engine, undefined, provider);
+  }
+  it('exchanges a nonce-bound Google ID token for application tokens and refuses replay or unlinked identities', async () => {
+    const scoped = await prepare();
+    const challenge = await request(scoped).post('/api/v1/auth/google/challenge').send({});
+    expect(challenge.status).toBe(201);
+    const body = {
+      challenge_id: challenge.body.data.challenge_id,
+      id_token: 'employee-subject|' + challenge.body.data.nonce,
+    };
+    const login = await request(scoped).post('/api/v1/auth/google').send(body);
+    expect(login.status, login.text).toBe(200);
+    expect(
+      (
+        await request(scoped)
+          .get('/api/v1/me')
+          .auth(login.body.data.access_token, { type: 'bearer' })
+      ).body.data.id,
+    ).toBe(user);
+    expect((await request(scoped).post('/api/v1/auth/google').send(body)).status).toBe(401);
+    const next = await request(scoped).post('/api/v1/auth/google/challenge').send({});
+    const unlinked = await request(scoped)
+      .post('/api/v1/auth/google')
+      .send({
+        challenge_id: next.body.data.challenge_id,
+        id_token: 'unlinked|' + next.body.data.nonce,
+      });
+    expect(unlinked.status).toBe(403);
+    expect(unlinked.body.error.code).toBe('SSO_ACCOUNT_NOT_LINKED');
+  });
+  it('rejects expired challenges, wrong nonces, disabled accounts, and disabled Google configuration', async () => {
+    const scoped = await prepare();
+    const challenge = await request(scoped).post('/api/v1/auth/google/challenge').send({});
+    const wrong = await request(scoped)
+      .post('/api/v1/auth/google')
+      .send({ challenge_id: challenge.body.data.challenge_id, id_token: 'employee-subject|wrong' });
+    expect(wrong.status).toBe(401);
+    const expired = await request(scoped).post('/api/v1/auth/google/challenge').send({});
+    await pool.query(
+      "UPDATE google_login_flows SET expires_at=now()-interval '1 second' WHERE id=$1",
+      [expired.body.data.challenge_id],
+    );
+    expect(
+      (
+        await request(scoped)
+          .post('/api/v1/auth/google')
+          .send({
+            challenge_id: expired.body.data.challenge_id,
+            id_token: 'employee-subject|' + expired.body.data.nonce,
+          })
+      ).status,
+    ).toBe(401);
+    await pool.query('UPDATE users SET active=false WHERE id=$1', [user]);
+    const disabled = await request(scoped).post('/api/v1/auth/google/challenge').send({});
+    expect(
+      (
+        await request(scoped)
+          .post('/api/v1/auth/google')
+          .send({
+            challenge_id: disabled.body.data.challenge_id,
+            id_token: 'employee-subject|' + disabled.body.data.nonce,
+          })
+      ).status,
+    ).toBe(403);
+    expect((await request(app).post('/api/v1/auth/google/challenge').send({})).status).toBe(503);
+  });
+  it('binds a web callback to its initiating browser and sends no application tokens in the redirect', async () => {
+    const scoped = await prepare();
+    const start = await request(scoped)
+      .post('/api/v1/auth/web/google/start')
+      .set('Origin', origin)
+      .send({});
+    expect(start.status, start.text).toBe(201);
+    const flowCookie = (start.headers['set-cookie'] as unknown as string[])
+      .find((v) => v.startsWith('absensi_google_flow='))!
+      .split(';')[0]!;
+    const state = new URL(start.body.data.authorization_url).searchParams.get('state')!;
+    const path = '/api/v1/auth/web/google/callback';
+    const wrong = await request(scoped)
+      .get(path)
+      .query({ state, code: 'admin-code' })
+      .set('Cookie', 'absensi_google_flow=' + 'x'.repeat(43));
+    expect(wrong.status).toBe(303);
+    expect(wrong.headers.location).toBe(origin + '/login?error=SSO_LOGIN_FAILED');
+    const callback = await request(scoped)
+      .get(path)
+      .query({ state, code: 'admin-code' })
+      .set('Cookie', flowCookie);
+    expect(callback.status, callback.text).toBe(303);
+    expect(callback.headers.location).toBe(origin + '/auth/callback');
+    expect(callback.headers.location).not.toContain('token');
+    const refreshCookie = (callback.headers['set-cookie'] as unknown as string[])
+      .find((v) => v.startsWith('absensi_web_refresh='))!
+      .split(';')[0]!;
+    const csrf = await request(scoped)
+      .post('/api/v1/auth/web/session')
+      .set('Origin', origin)
+      .set('Cookie', refreshCookie);
+    expect(csrf.status).toBe(200);
+    const session = await request(scoped)
+      .post('/api/v1/auth/web/refresh')
+      .set('Origin', origin)
+      .set('Cookie', refreshCookie)
+      .set('X-CSRF-Token', csrf.body.data.csrf_token);
+    expect(session.status, session.text).toBe(200);
+    expect(session.body.data.refresh_token).toBeUndefined();
+    expect(
+      (
+        await request(scoped)
+          .get('/api/v1/me')
+          .auth(session.body.data.access_token, { type: 'bearer' })
+      ).body.data.id,
+    ).toBe(admin);
+    const replay = await request(scoped)
+      .get(path)
+      .query({ state, code: 'admin-code' })
+      .set('Cookie', flowCookie);
+    expect(replay.headers.location).toBe(origin + '/login?error=SSO_LOGIN_FAILED');
+  });
+  it('refuses employee access to the admin panel after valid Google authentication', async () => {
+    const scoped = await prepare();
+    const start = await request(scoped)
+      .post('/api/v1/auth/web/google/start')
+      .set('Origin', origin)
+      .send({});
+    const flowCookie = (start.headers['set-cookie'] as unknown as string[])
+      .find((v) => v.startsWith('absensi_google_flow='))!
+      .split(';')[0]!;
+    const state = new URL(start.body.data.authorization_url).searchParams.get('state')!;
+    const callback = await request(scoped)
+      .get('/api/v1/auth/web/google/callback')
+      .query({ state, code: 'employee-code' })
+      .set('Cookie', flowCookie);
+    expect(callback.headers.location).toBe(origin + '/login?error=SSO_LOGIN_FAILED');
+    expect(
+      (
+        await pool.query("SELECT 1 FROM refresh_sessions WHERE user_id=$1 AND client_type='WEB'", [
+          user,
+        ])
+      ).rowCount,
+    ).toBe(0);
+    expect(
+      (
+        await request(scoped)
+          .post('/api/v1/auth/web/google/start')
+          .set('Origin', 'https://evil.example')
+          .send({})
+      ).status,
+    ).toBe(403);
+  });
+});

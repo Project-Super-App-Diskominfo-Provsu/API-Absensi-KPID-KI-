@@ -46,6 +46,33 @@ afterAll(async () => {
 });
 
 describe('database migrations', () => {
+  it('preserves existing refresh sessions as MOBILE when adding web and Google authentication', async () => {
+    fixtureDirectory = await mkdtemp(join(tmpdir(), 'absensi-web-upgrade-'));
+    for (const name of await readdir(new URL('../migrations/', import.meta.url))) {
+      if (name.endsWith('.sql') && name < '010_')
+        await copyFile(
+          new URL('../migrations/' + name, import.meta.url),
+          join(fixtureDirectory, name),
+        );
+    }
+    await migrateDatabase(pool, pathToFileURL(fixtureDirectory + '/'));
+    const user = (
+      await pool.query(
+        "INSERT INTO users(employee_number,name,email,password_hash,role) VALUES('OLD1','Existing','existing@example.test','fixture','SUPER_ADMIN') RETURNING id",
+      )
+    ).rows[0];
+    await pool.query(
+      "INSERT INTO refresh_sessions(user_id,family_id,token_hash,expires_at) VALUES($1,$2,'preserved-hash',now()+interval '30 days')",
+      [user.id, randomUUID()],
+    );
+    const before = (await pool.query('SELECT * FROM refresh_sessions')).rows[0];
+    expect(await migrateDatabase(pool)).toEqual(['010_web_and_google_auth.sql']);
+    const { client_type, ...after } = (await pool.query('SELECT * FROM refresh_sessions')).rows[0];
+    expect(client_type).toBe('MOBILE');
+    expect(after).toEqual(before);
+    await expect(verifyDatabaseSchema(pool)).resolves.toBeUndefined();
+    expect(await migrateDatabase(pool)).toEqual([]);
+  });
   it.each(['LF', 'CRLF'])(
     'preserves a legacy %s ledger across line-ending changes and rejects SQL edits',
     async (format) => {
@@ -137,6 +164,7 @@ describe('database migrations', () => {
     expect(await migrateDatabase(pool)).toEqual([
       '008_face_enrollment_version.sql',
       '009_same_day_schedules.sql',
+      '010_web_and_google_auth.sql',
     ]);
     expect((await pool.query('SELECT * FROM work_schedules')).rows).toEqual(corrected);
     expect(
@@ -172,6 +200,7 @@ describe('database migrations', () => {
       '007_office_map_centers.sql',
       '008_face_enrollment_version.sql',
       '009_same_day_schedules.sql',
+      '010_web_and_google_auth.sql',
     ]);
     const afterOffices = (await pool.query('SELECT * FROM offices ORDER BY id')).rows;
     expect(afterOffices.map(({ polygon, address, ...rest }) => rest)).toEqual(offices);
@@ -180,7 +209,7 @@ describe('database migrations', () => {
     expect(
       (
         await pool.query(
-          "SELECT * FROM schema_migrations WHERE name NOT IN ('004_postgis_geofencing.sql', '005_office_polygon.sql', '006_office_geofence_policy.sql', '007_office_map_centers.sql', '008_face_enrollment_version.sql', '009_same_day_schedules.sql') ORDER BY name",
+          "SELECT * FROM schema_migrations WHERE name NOT IN ('004_postgis_geofencing.sql', '005_office_polygon.sql', '006_office_geofence_policy.sql', '007_office_map_centers.sql', '008_face_enrollment_version.sql', '009_same_day_schedules.sql', '010_web_and_google_auth.sql') ORDER BY name",
         )
       ).rows,
     ).toEqual(ledger);
@@ -249,8 +278,9 @@ describe('database migrations', () => {
       '007_office_map_centers.sql',
       '008_face_enrollment_version.sql',
       '009_same_day_schedules.sql',
+      '010_web_and_google_auth.sql',
     ]);
-    expect((await pool.query('SELECT name,checksum FROM schema_migrations')).rowCount).toBe(9);
+    expect((await pool.query('SELECT name,checksum FROM schema_migrations')).rowCount).toBe(10);
     await expect(
       pool.query(
         'SELECT u.auth_mode,s.expires_at FROM users u LEFT JOIN refresh_sessions s ON false LIMIT 0',
@@ -310,8 +340,8 @@ describe('database migrations', () => {
 
   it('serializes simultaneous migrations from multiple replicas', async () => {
     const results = await Promise.all([migrateDatabase(pool), migrateDatabase(pool)]);
-    expect(results.map((names) => names.length).sort()).toEqual([0, 9]);
-    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(9);
+    expect(results.map((names) => names.length).sort()).toEqual([0, 10]);
+    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(10);
     expect((await pool.query('SELECT * FROM offices')).rowCount).toBe(3);
   });
 
@@ -325,7 +355,7 @@ describe('database migrations', () => {
       'Applied migration changed: 001_initial_postgres.sql',
     );
     expect((await pool.query("SELECT * FROM units WHERE name='Preserved unit'")).rowCount).toBe(1);
-    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(9);
+    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(10);
   });
 
   it('rolls back all pending schema changes and the ledger if any SQL fails', async () => {

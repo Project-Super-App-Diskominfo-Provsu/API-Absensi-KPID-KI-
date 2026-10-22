@@ -33,9 +33,17 @@ export async function issueSession(
   userId: string,
   family: string,
   expiresAt?: Date,
+  clientType: 'MOBILE' | 'WEB' = 'MOBILE',
 ) {
   const refreshToken = token();
-  const row = await insertRefreshSession(db, userId, family, hash(refreshToken), expiresAt);
+  const row = await insertRefreshSession(
+    db,
+    userId,
+    family,
+    hash(refreshToken),
+    expiresAt ?? (clientType === 'WEB' ? new Date(Date.now() + 8 * 3600000) : undefined),
+    clientType,
+  );
   const issuedAt = Math.floor(Date.now() / 1000);
   const expires = Math.min(issuedAt + 600, Math.floor(row.rows[0]!.expires_at.getTime() / 1000));
   if (expires <= issuedAt)
@@ -57,7 +65,13 @@ export async function issueSession(
   };
 }
 
-export async function loginUser(pool: Pool, config: Config, email: string, passwordPlain: string) {
+export async function loginUser(
+  pool: Pool,
+  config: Config,
+  email: string,
+  passwordPlain: string,
+  clientType: 'MOBILE' | 'WEB' = 'MOBILE',
+) {
   const found = await findUserByEmail(pool, email);
   const fallback = await (dummyHash ??= hashPassword(token()).catch((error: unknown) => {
     dummyHash = undefined;
@@ -73,7 +87,9 @@ export async function loginUser(pool: Pool, config: Config, email: string, passw
   const result = await transaction(pool, async (db) => {
     const active = await findActiveUserForShare(db, user!.id, user!.password_hash);
     if (!active.rowCount) fail(401, 'LOGIN_FAILED', 'Email atau password tidak valid.');
-    const session = await issueSession(db, config, user!.id, randomUUID());
+    if (clientType === 'WEB' && !['ADMIN', 'SUPER_ADMIN'].includes(active.rows[0]!.role))
+      fail(403, 'ADMIN_ACCESS_REQUIRED', 'Panel hanya untuk administrator.');
+    const session = await issueSession(db, config, user!.id, randomUUID(), undefined, clientType);
     await audit(db, user!.id, 'LOCAL_LOGIN', user!.id);
     return session;
   });
@@ -81,7 +97,12 @@ export async function loginUser(pool: Pool, config: Config, email: string, passw
   return result;
 }
 
-export async function refreshUserSession(pool: Pool, config: Config, refreshToken: string) {
+export async function refreshUserSession(
+  pool: Pool,
+  config: Config,
+  refreshToken: string,
+  clientType: 'MOBILE' | 'WEB' = 'MOBILE',
+) {
   const result = await transaction(pool, async (db) => {
     const tokenH = hash(refreshToken);
     const initial = await findSessionByTokenHash(db, tokenH);
@@ -91,7 +112,14 @@ export async function refreshUserSession(pool: Pool, config: Config, refreshToke
     const row = await findSessionWithUserForUpdate(db, tokenH);
     const session = row.rows[0];
 
-    if (!session?.active || session.revoked_at || new Date(session.expires_at) <= new Date()) {
+    if (session?.client_type !== clientType) return null;
+
+    if (
+      !session?.active ||
+      session.revoked_at ||
+      new Date(session.expires_at) <= new Date() ||
+      (clientType === 'WEB' && !['ADMIN', 'SUPER_ADMIN'].includes(session.role))
+    ) {
       if (session) {
         await revokeSessionFamily(db, session.family_id);
       }
@@ -99,7 +127,14 @@ export async function refreshUserSession(pool: Pool, config: Config, refreshToke
     }
 
     await revokeSessionById(db, session.id);
-    return issueSession(db, config, session.user_id, session.family_id, session.expires_at);
+    return issueSession(
+      db,
+      config,
+      session.user_id,
+      session.family_id,
+      session.expires_at,
+      clientType,
+    );
   });
 
   if (!result) fail(401, 'REFRESH_INVALID', 'Refresh token tidak valid atau sudah digunakan.');
