@@ -10,7 +10,7 @@ Tersedia: autentikasi JWT dengan refresh rotation dan pencabutan keluarga sesi s
 
 Ketiga kantor di-seed **nonaktif dengan pusat dari pin Google Maps pengguna dan polygon 50 meter** (migration 007, untuk kantor yang belum dikonfigurasi). Tidak ada akun atau password admin bawaan. Tidak ada model biometrik yang diunduh otomatis. Absensi belum dapat digunakan operasional sampai kantor, jadwal, perangkat, enrollment, model, dan threshold sudah siap.
 
-Belum tersedia: persetujuan koreksi/manual, penyelesaian administratif status `NEEDS_REVIEW`, ekspor CSV/XLSX, impor massal, push notification, integrasi Play Integrity/SSO, object storage, serta uji akurasi/PAD dan benchmark dengan model operasional. Jangan menganggap target FAR/FRR atau p95 pada PRD telah terbukti. Foto hanya diproses di memori dan tidak disimpan; bukti visual untuk review belum tersedia.
+Belum tersedia: persetujuan koreksi/manual, penyelesaian administratif status `NEEDS_REVIEW`, ekspor CSV/XLSX, impor massal, push notification, integrasi Play Integrity, pengujian Google SSO dengan kredensial nyata, object storage, serta uji akurasi/PAD dan benchmark dengan model operasional. Jangan menganggap target FAR/FRR atau p95 pada PRD telah terbukti. Foto hanya diproses di memori dan tidak disimpan; bukti visual untuk review belum tersedia.
 
 ## Aturan lokasi
 
@@ -182,3 +182,7 @@ Tes ONNX menghasilkan graph konstan hanya dalam direktori sementara, menjalankan
 - Audit tidak menyimpan password, token, foto, atau embedding. Trigger mencegah update/delete audit biasa; deploy produksi tetap memerlukan role database runtime tanpa hak pemilik/superuser dan kredensial migrasi terpisah.
 - Retensi/penghapusan backup, pemulihan, provisioning secret, dan kebijakan data biometrik operasional harus diselesaikan sebelum rollout. Fitur reset menghapus template pada database aktif; bukan klaim menghapus salinan backup.
 - OpenAPI saat ini disimpan sebagai dokumen TypeScript dan divalidasi otomatis. Generasi seluruh kontrak dari Zod serta contoh respons per endpoint belum selesai.
+
+## Panel admin web dan Google Sign-In
+
+Kontrak browser, cookie/CSRF, login Google native/web, callback, pemetaan identitas dan endpoint laporan/jadwal admin tersedia di [panduan panel admin](docs/admin-panel-api.md). Migration 010 diperlukan. WEB_AUTH_ENABLED dan GOOGLE_ENABLED tetap false sampai domain/credential siap.
