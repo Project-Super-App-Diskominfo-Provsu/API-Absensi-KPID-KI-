@@ -1,6 +1,10 @@
 # Docker aplikasi dengan database dan Redis eksternal
 
-`Dockerfile` membuat satu image multi-stage yang dipakai API dan worker ONNX. Runtime menggunakan user non-root. `compose.yaml` hanya berisi service `api` dan `face-worker` dengan profil opsional `biometrics`. Tidak ada database, Redis, atau volume data keduanya pada Compose aplikasi.
+`Dockerfile` menyediakan target `api` (default) tanpa bobot riset dan target `face-worker` dengan empat file model/manifest riset. Runtime memakai user non-root. `compose.yaml` berisi `api`, `face-worker` (profil `biometrics`) dan `notification-worker` (profil `notifications`). Worker notifikasi memakai image API. PostgreSQL/PostGIS dan Redis dikelola terpisah.
+
+Untuk Application Dockerfile, gunakan image hasil `docker build --target face-worker -t absensi-face-worker:TAG .` pada service wajah. Image tersebut mempunyai model di `/app/models/research`, command worker dan health check port 8000. Tetap isi token serta `FACE_ALLOW_RESEARCH_MODELS=true` untuk pilot; image tidak mengizinkan riset secara otomatis. Build default `docker build -t absensi-api:TAG .` menghasilkan image API tanpa model. Compose memilih target worker dan tag `absensi-face-worker` secara otomatis; bind mount `FACE_MODELS_PATH` mengoverride model image dan harus berisi file yang benar. Path host yang tidak ada ditolak, bukan dibuat sebagai direktori kosong.
+
+Kredensial FCM kompatibel dengan konfigurasi sebelumnya: `GOOGLE_APPLICATION_CREDENTIALS` pada environment Compose adalah path file host, dipasang read-only ke `/run/secrets/firebase-admin.json` dan diteruskan dengan path container tersebut ke worker. `SECRETS_PATH` tidak digunakan. Alternatif `FIREBASE_SERVICE_ACCOUNT_BASE64` diinjeksikan hanya ke worker; jika hanya memakai base64, kosongkan path host. Compose memasang `config/firebase-admin.placeholder.json` berisi `{}` sebagai placeholder tanpa secret. Base64 diprioritaskan atas file; tanpa kredensial valid startup tetap gagal. Base64 bukan enkripsi dan harus disimpan sebagai secret. Lihat docs/fcm.md.
 
 ## Menjalankan API
 
@@ -21,6 +25,8 @@ API mengikat port host pada loopback saja: `127.0.0.1:3000` secara default. Pasa
 `docker compose config --quiet` memvalidasi konfigurasi tanpa mencetak environment berisi secret. Jangan membagikan output penuh `docker compose config`, `docker inspect`, atau log proxy yang memuat kredensial.
 
 ## Environment runtime dan Dokploy
+
+Untuk staging baru, buat secret langsung di terminal container Node pada Dokploy. Jangan menyalin key `.env` lokal. Jalankan `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"` tiga kali terpisah untuk JWT_SECRET, BIOMETRIC_KEY_BASE64 dan FACE_WORKER_TOKEN, lalu masukkan masing-masing hasil ke Environment service terkait dan redeploy. Token worker yang sama disetel pada API dan worker wajah; key JWT serta key biometrik hanya diperlukan API. Jangan menambahkan command generate saat startup karena restart akan mengganti secret. Jika staging sudah mempunyai secret/data, pertahankan secret staging yang diperlukan, terutama key biometrik untuk template yang telah dienkripsi. Google client secret dan Firebase private key berasal dari console penyedia, bukan generator random aplikasi.
 
 Compose memetakan variabel aplikasi secara eksplisit dari environment proses Compose atau file `.env` ke container API. Tiga variabel wajib (`DATABASE_URL`, `REDIS_URL`, `JWT_SECRET`) yang hilang atau kosong menghentikan Compose sebelum container dibuat. `BIOMETRIC_KEY_BASE64` yang hilang atau kosong tetap mengizinkan startup login/admin, tetapi enrollment dan absensi mengembalikan `503 FACE_NOT_CONFIGURED`. Key nonkosong tetap wajib dapat didekode menjadi 32 byte. Environment proses Compose mempunyai prioritas atas `.env`; periksa apakah ada variabel shell lama yang menimpa nilai file.
 

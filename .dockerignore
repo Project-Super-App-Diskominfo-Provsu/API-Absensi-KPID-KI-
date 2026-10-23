@@ -3,7 +3,13 @@ dist
 .git
 .env
 .env.*
-models
+models/*
+!models/research/
+models/research/*
+!models/research/detector.onnx
+!models/research/recognizer.onnx
+!models/research/pad.onnx
+!models/research/manifest.json
 secrets
 *firebase-adminsdk*.json
 coverage

@@ -104,6 +104,12 @@ NOTIFICATION_POLL_MS=10000
 
 Path di atas merupakan sumber bind mount host. Compose memasangnya read-only ke `/run/secrets/firebase-admin.json` dan mengatur path di dalam worker secara otomatis. Pastikan user non-root container dapat membaca file. Gunakan service account dengan izin pengiriman FCM yang diperlukan; jangan menanam private key ke image atau mengirimnya ke Android.
 
+Alternatif tanpa upload JSON: isi `FIREBASE_SERVICE_ACCOUNT_BASE64` pada environment worker dengan base64 JSON service account lengkap. Kosongkan `GOOGLE_APPLICATION_CREDENTIALS` pada environment Compose jika hanya memakai base64. Compose menggunakan placeholder `{}` tanpa secret ketika path host kosong; sender mengabaikannya bila base64 tersedia. Base64 diprioritaskan jika kedua sumber terisi; nilai invalid tidak otomatis fallback ke file. Base64 tetap private key dan wajib diperlakukan sebagai secret. `SECRETS_PATH` tidak digunakan. Pada Application Dockerfile, path file tetap merupakan path di dalam container jika memilih mode file.
+
+API memakai `NOTIFICATION_WORKER_URL` untuk laporan readiness gabungan. Lokal default `http://localhost:8001`; Compose menetapkan `http://notification-worker:8001` agar nilai lokal dari `.env` tidak mengarah ke container API sendiri. Application Dockerfile memerlukan hostname privat worker yang sebenarnya. `/ready/auth` tetap tidak bergantung pada worker, sedangkan `/ready` memerlukan readiness notifikasi ketika FCM diaktifkan.
+
+Libur dan izin disetujui diperiksa kembali tepat sebelum pengiriman. Job lama yang tidak lagi layak menjadi SKIPPED dengan alasan HOLIDAY/ON_LEAVE, termasuk bila izin disetujui setelah job dibuat. Pengiriman yang sudah dimulai tetap dapat beririsan dengan perubahan berikutnya.
+
 Aktifkan profil `notifications` pada deployment Dokploy yang sama dengan API. Jika menjalankan dari terminal host, gunakan root checkout dan nama project Compose yang benar:
 
 ```sh

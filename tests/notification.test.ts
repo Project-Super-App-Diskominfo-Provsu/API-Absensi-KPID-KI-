@@ -5,6 +5,10 @@ import {
   createFirebaseSender,
 } from '../src/modules/notification/notification.sender.js';
 import { readNotificationConfig } from '../src/config/notification-env.js';
+import { generateKeyPairSync } from 'node:crypto';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 describe('FCM reminder payload', () => {
   const input = {
@@ -87,5 +91,31 @@ describe('FCM reminder payload', () => {
       FIREBASE_SERVICE_ACCOUNT_BASE64: 'e30=',
     });
     expect(config.FIREBASE_SERVICE_ACCOUNT_BASE64).toBe('e30=');
+  });
+  it('initializes file and base64 credentials without sending or contacting Google', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'absensi-fcm-'));
+    const path = join(directory, 'account.json');
+    const key = generateKeyPairSync('rsa', { modulusLength: 2048 })
+      .privateKey.export({ type: 'pkcs8', format: 'pem' })
+      .toString();
+    const json = JSON.stringify({
+      type: 'service_account',
+      project_id: 'test-project',
+      client_email: 'sender@test-project.iam.gserviceaccount.com',
+      private_key: key,
+    });
+    try {
+      await writeFile(path, json);
+      const fromFile = await createFirebaseSender('test-project', path);
+      await fromFile.close();
+      const fromBase64 = await createFirebaseSender(
+        'test-project',
+        'unavailable-file',
+        Buffer.from(json).toString('base64'),
+      );
+      await fromBase64.close();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });

@@ -35,7 +35,7 @@ services:
       SSO_TOKEN_AUTH_METHOD: ${SSO_TOKEN_AUTH_METHOD:-none}
       FACE_WORKER_URL: http://face-worker:8000
       FACE_WORKER_TOKEN: ${FACE_WORKER_TOKEN:-}
-      NOTIFICATION_WORKER_URL: ${NOTIFICATION_WORKER_URL:-http://notification-worker:8001}
+      NOTIFICATION_WORKER_URL: http://notification-worker:8001
       FACE_MODEL_VERSION: ${FACE_MODEL_VERSION:-}
       FACE_MATCH_THRESHOLD: ${FACE_MATCH_THRESHOLD:-}
       FACE_REVIEW_THRESHOLD: ${FACE_REVIEW_THRESHOLD:-}
@@ -71,17 +71,17 @@ services:
       DB_POOL_MAX: ${DB_POOL_MAX:-15}
       FCM_ENABLED: ${FCM_ENABLED:-false}
       FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-}
-      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/firebase-admin.json
       FIREBASE_SERVICE_ACCOUNT_BASE64: ${FIREBASE_SERVICE_ACCOUNT_BASE64:-}
       NOTIFICATION_WORKER_PORT: "8001"
       NOTIFICATION_POLL_MS: ${NOTIFICATION_POLL_MS:-10000}
     volumes:
       - type: bind
-        source: ${SECRETS_PATH:-./secrets}
-        target: /run/secrets
+        source: ${GOOGLE_APPLICATION_CREDENTIALS:-./config/firebase-admin.placeholder.json}
+        target: /run/secrets/firebase-admin.json
         read_only: true
         bind:
-          create_host_path: true
+          create_host_path: false
     extra_hosts: ["host.docker.internal:host-gateway"]
     read_only: true
     tmpfs: ["/tmp:size=64m,mode=1777"]
@@ -96,9 +96,10 @@ services:
       retries: 3
   face-worker:
     profiles: [biometrics]
-    image: absensi-api:${APP_IMAGE_TAG:-local}
+    image: absensi-face-worker:${APP_IMAGE_TAG:-local}
     build:
       context: .
+      target: face-worker
     command: ["node", "--env-file-if-exists=/app/.env", "dist/worker/server.js"]
     init: true
     restart: unless-stopped
@@ -114,7 +115,7 @@ services:
         target: /app/models
         read_only: true
         bind:
-          create_host_path: true
+          create_host_path: false
     read_only: true
     tmpfs: ["/tmp:size=64m,mode=1777"]
     cap_drop: [ALL]
