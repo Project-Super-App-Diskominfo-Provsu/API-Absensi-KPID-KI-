@@ -16,12 +16,15 @@ import {
   findAuditLogs,
   insertWorkSchedule,
   findWorkSchedulesByUserAndRange,
+  insertWorkSchedulesBatch,
+  findManagedActiveUsers,
   findAdminAttendance,
   findAdminSchedules,
   findScheduleById,
   findScheduleAttendance,
   updateSchedule,
 } from './admin.model.js';
+import { getDefaultWorkHours, isWeekend } from './admin.schedule-policy.js';
 import {
   scheduleSchema,
   type userListQuerySchema,
@@ -242,4 +245,91 @@ export async function createSchedule(
 export async function listSchedules(pool: Pool, userId: string, from: string, to: string) {
   const result = await findWorkSchedulesByUserAndRange(pool, userId, from, to);
   return result.rows;
+}
+
+export async function generateSchedules(
+  pool: Pool,
+  actor: User,
+  input: {
+    user_id?: string;
+    from: string;
+    to: string;
+    grace_minutes: number;
+    skip_holidays: boolean;
+  },
+) {
+  return transaction(pool, async (db) => {
+    let targetUserIds: string[] = [];
+    if (input.user_id) {
+      await managedUser(db, actor, input.user_id);
+      targetUserIds = [input.user_id];
+    } else {
+      const category = actor.role === 'SUPER_ADMIN' ? null : actor.employee_category_code;
+      const managed = await findManagedActiveUsers(db, category);
+      targetUserIds = managed.rows.map((r) => r.id);
+    }
+
+    if (!targetUserIds.length) {
+      return { total_users: 0, generated_schedules: 0, skipped_days: 0 };
+    }
+
+    const holidayDates = new Set<string>();
+    if (input.skip_holidays) {
+      const holidays = await db.query<{ holiday_date: string }>(
+        'SELECT holiday_date::text FROM holidays WHERE holiday_date BETWEEN $1 AND $2',
+        [input.from, input.to],
+      );
+      for (const h of holidays.rows) {
+        holidayDates.add(h.holiday_date);
+      }
+    }
+
+    const rowsToInsert: Array<{
+      user_id: string;
+      work_date: string;
+      starts_at: string;
+      ends_at: string;
+      grace_minutes: number;
+    }> = [];
+
+    let skippedDays = 0;
+    const current = new Date(`${input.from}T12:00:00+07:00`);
+    const end = new Date(`${input.to}T12:00:00+07:00`);
+
+    while (current <= end) {
+      const dateStr = current.toISOString().slice(0, 10);
+      if (isWeekend(dateStr) || holidayDates.has(dateStr)) {
+        skippedDays++;
+      } else {
+        const hours = getDefaultWorkHours(dateStr);
+        if (hours) {
+          for (const uid of targetUserIds) {
+            rowsToInsert.push({
+              user_id: uid,
+              work_date: dateStr,
+              starts_at: hours.starts_at,
+              ends_at: hours.ends_at,
+              grace_minutes: input.grace_minutes,
+            });
+          }
+        }
+      }
+      current.setDate(current.getDate() + 1);
+    }
+
+    const inserted = await insertWorkSchedulesBatch(db, rowsToInsert);
+    await audit(db, actor.id, 'SCHEDULES_GENERATED', actor.id, {
+      from: input.from,
+      to: input.to,
+      users_count: targetUserIds.length,
+      generated: inserted,
+      skipped_days: skippedDays,
+    });
+
+    return {
+      total_users: targetUserIds.length,
+      generated_schedules: inserted,
+      skipped_days: skippedDays,
+    };
+  });
 }

@@ -25,6 +25,8 @@ import { errorHandler } from './middleware/error-handler.js';
 import { hash } from './shared/security/crypto.js';
 import { openapi } from './docs/openapi.js';
 import { notificationRoutes } from './modules/notification/notification.route.js';
+import { holidayRoutes } from './modules/holiday/holiday.route.js';
+import { leaveRoutes } from './modules/leave/leave.route.js';
 import { readCookie, WEB_REFRESH_COOKIE } from './modules/auth/auth.web.middleware.js';
 
 export function createApp(
@@ -193,6 +195,8 @@ export function createApp(
     notificationRoutes(pool, config),
     faceRoutes(pool, config, engine),
     attendanceRoutes(pool, config, engine),
+    holidayRoutes(pool),
+    leaveRoutes(pool),
   );
   app.use((_req, res) =>
     res.status(404).json({

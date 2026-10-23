@@ -282,6 +282,42 @@ export const openapi = {
         reason: { ...str, minLength: 5, maxLength: 500 },
       }),
       Reason: object({ reason: { ...str, minLength: 5, maxLength: 500 } }),
+      HolidayInput: object(
+        {
+          holiday_date: date,
+          name: { ...str, minLength: 2, maxLength: 200 },
+          type: { enum: ['NATIONAL_HOLIDAY', 'JOINT_LEAVE'] },
+          description: { ...str, maxLength: 500 },
+        },
+        ['holiday_date', 'name', 'type'],
+      ),
+      LeaveInput: object(
+        {
+          category: { enum: ['SAKIT', 'IZIN', 'CUTI', 'DINAS_LUAR'] },
+          start_date: date,
+          end_date: date,
+          notes: { ...str, minLength: 5, maxLength: 1000 },
+          attachment_url: { ...str, format: 'uri', maxLength: 1000 },
+        },
+        ['category', 'start_date', 'end_date', 'notes'],
+      ),
+      LeaveReview: object(
+        {
+          status: { enum: ['APPROVED', 'REJECTED'] },
+          review_notes: { ...str, maxLength: 500 },
+        },
+        ['status'],
+      ),
+      GenerateSchedules: object(
+        {
+          user_id: uuid,
+          from: date,
+          to: date,
+          grace_minutes: { type: 'integer', minimum: 0, maximum: 120, default: 0 },
+          skip_holidays: { type: 'boolean', default: true },
+        },
+        ['from', 'to'],
+      ),
       Attendance: object(
         {
           image: { type: 'string', format: 'binary', description: 'JPEG/PNG, maksimum 5 MiB.' },
@@ -620,6 +656,86 @@ export const openapi = {
     },
     '/admin/audit-logs': {
       get: operation('SUPER_ADMIN: audit log append-only', { parameters: pagination }),
+    },
+    '/admin/schedules/generate': {
+      post: operation(
+        'Generate jadwal kerja otomatis instansi (Senin-Kamis 16:30, Jumat 17:00, lewati libur/cuti bersama)',
+        {
+          body: 'GenerateSchedules',
+          status: 201,
+        },
+      ),
+    },
+    '/holidays': {
+      get: operation('Daftar hari libur nasional dan cuti bersama', {
+        public: true,
+        parameters: [
+          { name: 'from', in: 'query', schema: date },
+          { name: 'to', in: 'query', schema: date },
+        ],
+      }),
+    },
+    '/admin/holidays': {
+      get: operation('Daftar hari libur untuk admin', {
+        parameters: [
+          { name: 'from', in: 'query', schema: date },
+          { name: 'to', in: 'query', schema: date },
+        ],
+      }),
+      post: operation('Tambah hari libur nasional atau cuti bersama', {
+        body: 'HolidayInput',
+        status: 201,
+      }),
+    },
+    '/admin/holidays/{id}': {
+      delete: operation('Hapus hari libur', { id: true }),
+    },
+    '/leaves': {
+      get: operation('Daftar permohonan izin/cuti pegawai sendiri', {
+        parameters: [
+          ...pagination,
+          { name: 'from', in: 'query', schema: date },
+          { name: 'to', in: 'query', schema: date },
+          {
+            name: 'status',
+            in: 'query',
+            schema: { enum: ['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED'] },
+          },
+        ],
+      }),
+      post: operation('Ajukan permohonan izin/cuti (sakit, izin, cuti, dinas luar)', {
+        body: 'LeaveInput',
+        status: 201,
+      }),
+    },
+    '/leaves/{id}': {
+      delete: operation('Batalkan permohonan izin sendiri yang masih PENDING', { id: true }),
+    },
+    '/admin/leaves': {
+      get: operation('Daftar permohonan izin dalam lingkup admin', {
+        parameters: [
+          ...pagination,
+          { name: 'user_id', in: 'query', schema: uuid },
+          {
+            name: 'category',
+            in: 'query',
+            schema: { enum: ['SAKIT', 'IZIN', 'CUTI', 'DINAS_LUAR'] },
+          },
+          {
+            name: 'status',
+            in: 'query',
+            schema: { enum: ['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED'] },
+          },
+          { name: 'from', in: 'query', schema: date },
+          { name: 'to', in: 'query', schema: date },
+        ],
+      }),
+    },
+    '/admin/leaves/{id}': {
+      patch: operation('Tinjau (setujui/tolak) permohonan izin pegawai', {
+        id: true,
+        body: 'LeaveReview',
+      }),
     },
   },
 };

@@ -50,6 +50,8 @@ export async function enqueueReminders(db: Db, project: string, now: Date) {
       AND EXISTS(SELECT 1 FROM refresh_sessions r WHERE r.user_id=u.id AND r.family_id=p.session_family_id
         AND r.client_type='MOBILE' AND r.revoked_at IS NULL AND r.expires_at>$2)
       AND NOT EXISTS(SELECT 1 FROM attendances a WHERE a.user_id=u.id AND a.schedule_id=s.id AND a.type='CHECK_IN')
+      AND NOT EXISTS(SELECT 1 FROM holidays h WHERE h.holiday_date=s.work_date)
+      AND NOT EXISTS(SELECT 1 FROM leave_requests l WHERE l.user_id=u.id AND l.status='APPROVED' AND s.work_date BETWEEN l.start_date AND l.end_date)
     ON CONFLICT(schedule_id,kind) DO UPDATE SET due_at=EXCLUDED.due_at,expires_at=EXCLUDED.expires_at,
       next_attempt_at=CASE WHEN notification_deliveries.attempts=0 THEN EXCLUDED.due_at
         ELSE GREATEST(notification_deliveries.next_attempt_at,EXCLUDED.due_at) END

@@ -67,11 +67,30 @@ describe('database migrations', () => {
     );
     const beforeUsers = (await pool.query('SELECT * FROM users')).rows;
     const beforeSessions = (await pool.query('SELECT * FROM refresh_sessions')).rows;
-    expect(await migrateDatabase(pool)).toEqual(['012_checkin_notifications.sql']);
+    expect(await migrateDatabase(pool)).toEqual([
+      '012_checkin_notifications.sql',
+      '013_holidays_and_leaves.sql',
+    ]);
     expect((await pool.query('SELECT * FROM users')).rows).toEqual(beforeUsers);
     expect((await pool.query('SELECT * FROM refresh_sessions')).rows).toEqual(beforeSessions);
     expect((await pool.query('SELECT 1 FROM device_push_tokens')).rowCount).toBe(0);
     expect((await pool.query('SELECT 1 FROM notification_deliveries')).rowCount).toBe(0);
+  });
+  it('adds holidays and leave requests tables without changing existing users or schedules', async () => {
+    fixtureDirectory = await mkdtemp(join(tmpdir(), 'absensi-holiday-upgrade-'));
+    for (const name of await readdir(new URL('../migrations/', import.meta.url))) {
+      if (name.endsWith('.sql') && name < '013_')
+        await copyFile(
+          new URL('../migrations/' + name, import.meta.url),
+          join(fixtureDirectory, name),
+        );
+    }
+    await migrateDatabase(pool, pathToFileURL(fixtureDirectory + '/'));
+    const beforeUsers = (await pool.query('SELECT * FROM users')).rows;
+    expect(await migrateDatabase(pool)).toEqual(['013_holidays_and_leaves.sql']);
+    expect((await pool.query('SELECT * FROM users')).rows).toEqual(beforeUsers);
+    expect((await pool.query('SELECT 1 FROM holidays')).rowCount).toBeGreaterThan(0);
+    expect((await pool.query('SELECT 1 FROM leave_requests')).rowCount).toBe(0);
   });
   it('adds one-time Google email permission without enabling existing accounts or changing profiles', async () => {
     fixtureDirectory = await mkdtemp(join(tmpdir(), 'absensi-email-upgrade-'));
@@ -90,6 +109,7 @@ describe('database migrations', () => {
     expect(await migrateDatabase(pool)).toEqual([
       '011_google_email_linking.sql',
       '012_checkin_notifications.sql',
+      '013_holidays_and_leaves.sql',
     ]);
     const { google_email_linking_allowed, ...after } = (await pool.query('SELECT * FROM users'))
       .rows[0];
@@ -120,6 +140,7 @@ describe('database migrations', () => {
       '010_web_and_google_auth.sql',
       '011_google_email_linking.sql',
       '012_checkin_notifications.sql',
+      '013_holidays_and_leaves.sql',
     ]);
     const { client_type, ...after } = (await pool.query('SELECT * FROM refresh_sessions')).rows[0];
     expect(client_type).toBe('MOBILE');
@@ -221,6 +242,7 @@ describe('database migrations', () => {
       '010_web_and_google_auth.sql',
       '011_google_email_linking.sql',
       '012_checkin_notifications.sql',
+      '013_holidays_and_leaves.sql',
     ]);
     expect((await pool.query('SELECT * FROM work_schedules')).rows).toEqual(corrected);
     expect(
@@ -259,6 +281,7 @@ describe('database migrations', () => {
       '010_web_and_google_auth.sql',
       '011_google_email_linking.sql',
       '012_checkin_notifications.sql',
+      '013_holidays_and_leaves.sql',
     ]);
     const afterOffices = (await pool.query('SELECT * FROM offices ORDER BY id')).rows;
     expect(afterOffices.map(({ polygon, address, ...rest }) => rest)).toEqual(offices);
@@ -267,7 +290,7 @@ describe('database migrations', () => {
     expect(
       (
         await pool.query(
-          "SELECT * FROM schema_migrations WHERE name NOT IN ('004_postgis_geofencing.sql', '005_office_polygon.sql', '006_office_geofence_policy.sql', '007_office_map_centers.sql', '008_face_enrollment_version.sql', '009_same_day_schedules.sql', '010_web_and_google_auth.sql', '011_google_email_linking.sql', '012_checkin_notifications.sql') ORDER BY name",
+          "SELECT * FROM schema_migrations WHERE name NOT IN ('004_postgis_geofencing.sql', '005_office_polygon.sql', '006_office_geofence_policy.sql', '007_office_map_centers.sql', '008_face_enrollment_version.sql', '009_same_day_schedules.sql', '010_web_and_google_auth.sql', '011_google_email_linking.sql', '012_checkin_notifications.sql', '013_holidays_and_leaves.sql') ORDER BY name",
         )
       ).rows,
     ).toEqual(ledger);
@@ -339,8 +362,9 @@ describe('database migrations', () => {
       '010_web_and_google_auth.sql',
       '011_google_email_linking.sql',
       '012_checkin_notifications.sql',
+      '013_holidays_and_leaves.sql',
     ]);
-    expect((await pool.query('SELECT name,checksum FROM schema_migrations')).rowCount).toBe(12);
+    expect((await pool.query('SELECT name,checksum FROM schema_migrations')).rowCount).toBe(13);
     await expect(
       pool.query(
         'SELECT u.auth_mode,s.expires_at FROM users u LEFT JOIN refresh_sessions s ON false LIMIT 0',

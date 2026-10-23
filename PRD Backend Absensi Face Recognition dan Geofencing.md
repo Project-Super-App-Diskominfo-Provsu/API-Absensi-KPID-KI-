@@ -58,11 +58,11 @@ Kategori pegawai terpisah dari peran akses dan unit kerja. `employee_category` m
 
 | Kode lokasi | Nama kantor | Radius | Koordinat pusat | Zona waktu |
 | --- | --- | --- | --- | --- |
-| DISKOMINFO_PROVSU | Dinas Komunikasi dan Informatika Provinsi Sumatera Utara (kantor utama) | 50 meter | Belum ditentukan | Asia/Jakarta |
-| KPID_SUMUT | Komisi Penyiaran Indonesia Daerah Sumatera Utara | 50 meter | Belum ditentukan | Asia/Jakarta |
-| KI_SUMUT | Komisi Informasi Sumatera Utara | 50 meter | Belum ditentukan | Asia/Jakarta |
+| DISKOMINFO_PROVSU | Dinas Komunikasi dan Informatika Provinsi Sumatera Utara (kantor utama) | 50 meter | 3.601785, 98.682827 | Asia/Jakarta |
+| KPID_SUMUT | Komisi Penyiaran Indonesia Daerah Sumatera Utara | 50 meter | 3.601287, 98.6823199 | Asia/Jakarta |
+| KI_SUMUT | Komisi Informasi Sumatera Utara | 50 meter | 3.5464663, 98.6946129 | Asia/Jakarta |
 
-Koordinat harus dikonfirmasi dari titik absensi di lapangan. Lokasi belum boleh diaktifkan sebelum koordinat valid tersedia; jangan memakai koordinat perkiraan atau `(0, 0)` sebagai pengganti. Izin kategori-lokasi disimpan sebagai relasi di database dengan matriks di atas sebagai data awal, agar aturan terpusat dan dapat diaudit.
+Koordinat awal di-seed dari pin Google Maps pengguna (migration 007) dan polygon dibentuk otomatis dari buffer 50 meter (migration 006). Admin harus mengonfirmasi titik absensi di lapangan dan mengisi kebijakan GPS sebelum mengaktifkan kantor; jangan memakai koordinat perkiraan atau `(0, 0)` sebagai pengganti. Izin kategori-lokasi disimpan sebagai relasi di database dengan matriks di atas sebagai data awal, agar aturan terpusat dan dapat diaudit.
 
 ## 4. Ruang Lingkup
 
@@ -175,7 +175,7 @@ Mobile App → Reverse Proxy (Nginx) → Express API (modular monolith)
 | devices | id, user\_id, public\_key (Ed25519 PEM), platform (ANDROID), status, bound\_at |
 | refresh\_sessions | id, user\_id, family\_id, token\_hash, expires\_at, revoked\_at |
 | attendance\_challenges | id, user\_id, device\_id, purpose, nonce\_hash, created\_at, expires\_at, consumed\_at |
-| offices | id, code (unik), nama, location (geography Point 4326; wajib sebelum aktif), radius\_m (50), max\_gps\_accuracy\_m, timezone, aktif |
+| offices | id, code (unik), nama, address, latitude, longitude, polygon (geometry Polygon 4326), radius_m (50), max_gps_accuracy_m, max_location_age_s, timezone, aktif |
 | category\_office\_permissions | employee\_category\_code, office\_id; kombinasi unik dan foreign key ke kategori/lokasi; empat relasi awal sesuai bagian 3.1 |
 | work\_schedules | id, office\_id atau unit\_id, jam\_masuk, jam\_pulang, toleransi\_menit |
 | face\_templates | id, user\_id, embedding (terenkripsi), model\_version, quality\_score, created\_at, revoked\_at |
@@ -200,7 +200,7 @@ Prefix: `/api/v1`. Autentikasi memakai Bearer token kecuali disebutkan lain.
 | GET | /me | Pegawai | Profil, kategori pegawai, peran, dan status enrollment |
 | POST | /devices/bind | Pegawai | Ajukan pengikatan perangkat |
 | PATCH | /admin/devices/:id | Admin | Setujui atau cabut perangkat |
-| GET | /offices | Pegawai | Hanya lokasi aktif yang diizinkan berdasarkan kategori terkini; sertakan kode, koordinat, radius 50 meter, dan batas akurasi |
+| GET | /offices | Pegawai | Hanya lokasi aktif yang diizinkan berdasarkan kategori terkini; sertakan kode, nama, alamat, koordinat, polygon GeoJSON, radius 50 meter, dan batas akurasi/usia GPS |
 | GET/POST | /admin/offices | Admin | Lihat dan tambah lokasi dengan validasi kebijakan radius |
 | PATCH | /admin/offices/:id | Admin | Ubah konfigurasi atau nonaktifkan lokasi; perubahan diaudit |
 | GET/POST | /admin/users | Admin | Lihat dan tambah pegawai beserta kategori KPID/KI |
@@ -284,7 +284,7 @@ Durasi bergantung ukuran tim dan hanya sebagai titik awal diskusi.
 3. Apakah perlu integrasi SSO atau data pegawai dari sistem kepegawaian yang sudah ada?
 4. Hosting di server sendiri (on-premise) atau cloud? Ini memengaruhi pilihan layanan pendukung.
 5. Apa kebijakan retensi foto dan embedding yang diizinkan?
-6. Apakah ada kebutuhan shift, dinas luar, atau lokasi berbentuk poligon (bukan hanya lingkaran)?
+6. Apakah ada kebutuhan shift, dinas luar, atau lokasi berbentuk poligon (bukan hanya lingkaran)? *(Diputuskan: geofencing poligon dengan PostGIS telah diimplementasikan pada migration 005–007 dengan buffer 50 meter, ST_Covers, dan batas ST_DWithin 50 meter).*
 7. Apakah perlu mode offline atau toleransi jaringan buruk?
 8. Platform mobile sudah diputuskan: **Android saja**, menggunakan React Native.
 9. Perpindahan kantor sudah diputuskan: **boleh masuk dan pulang di kantor berbeda yang diizinkan**.
@@ -350,10 +350,10 @@ Bagian ini mencatat hasil implementasi awal, bukan menyatakan seluruh milestone 
 
 ### 17.3 Pekerjaan yang Masih Diperlukan
 
-- Konfirmasi koordinat ketiga kantor serta kalibrasi ambang akurasi dan usia GPS di lapangan. Kantor tetap nonaktif sampai diisi admin.
+- Konfirmasi koordinat ketiga kantor di lapangan (titik awal sudah di-seed dari pin Google Maps pada migration 007) serta kalibrasi ambang akurasi dan usia GPS. Kantor tetap nonaktif sampai diaktifkan admin.
 - Pilih bobot model recognition dan PAD dengan lisensi penggunaan operasional yang sesuai, isi manifest, tetapkan threshold dari pilot, dan uji spoofing/perangkat serta beban pagi.
 - Putuskan retensi biometrik dan backup, prosedur penghapusan/pemulihan, konfigurasi produksi, dan integrasi Android/Play Integrity.
-- Penyelesaian administratif NEEDS_REVIEW, koreksi/manual, laporan/ekspor, impor, notifikasi, dan multi-shift belum diimplementasikan. NEEDS_REVIEW belum menghasilkan absensi sah.
+- Penyelesaian administratif NEEDS_REVIEW, koreksi/manual, laporan/ekspor, impor, dan multi-shift belum diimplementasikan (pengingat check-in FCM telah diimplementasikan pada migration 012). NEEDS_REVIEW belum menghasilkan absensi sah.
 - Penambahan lokasi baru beserta perubahan matriks izin belum diekspos sebagai API; implementasi saat ini memakai tepat tiga lokasi dan empat relasi awal yang disepakati.
 - PRD ini menjadi acuan kebutuhan. Endpoint/fitur yang masih berupa rencana tidak boleh dilaporkan sebagai selesai hanya karena tercantum pada bagian spesifikasi.
 
@@ -413,9 +413,9 @@ Pengguna menegaskan tiga lokasi dan alamat pada 21 Oktober 2026:
 
 | Kode | Kantor | Alamat dari pengguna | Titik pusat absensi |
 | --- | --- | --- | --- |
-| DISKOMINFO_PROVSU | Dinas Komunikasi dan Informatika Provinsi Sumatera Utara | Jl. HM. Said No.27, Gaharu, Kec. Medan Tim., Kota Medan, Sumatera Utara 20233 | Menunggu pin/latitude-longitude terverifikasi |
-| KPID_SUMUT | Komisi Penyiaran Indonesia Daerah Sumatera Utara | Jl. Adinegoro No.7, Gaharu, Kec. Medan Tim., Kota Medan, Sumatera Utara 20235 | Menunggu pin/latitude-longitude terverifikasi |
-| KI_SUMUT | Komisi Informasi Sumatera Utara | Jl. Alfalah No.22, Suka Maju, Kec. Medan Johor, Kota Medan, Sumatera Utara 20146 | Menunggu pin/latitude-longitude terverifikasi |
+| DISKOMINFO_PROVSU | Dinas Komunikasi dan Informatika Provinsi Sumatera Utara | Jl. HM. Said No.27, Gaharu, Kec. Medan Tim., Kota Medan, Sumatera Utara 20233 | 3.601785, 98.682827 (Pin Google Maps migration 007) |
+| KPID_SUMUT | Komisi Penyiaran Indonesia Daerah Sumatera Utara | Jl. Adinegoro No.7, Gaharu, Kec. Medan Tim., Kota Medan, Sumatera Utara 20235 | 3.601287, 98.6823199 (Pin Google Maps migration 007) |
+| KI_SUMUT | Komisi Informasi Sumatera Utara | Jl. Alfalah No.22, Suka Maju, Kec. Medan Johor, Kota Medan, Sumatera Utara 20146 | 3.5464663, 98.6946129 (Pin Google Maps migration 007) |
 
 KPID boleh absen di DISKOMINFO_PROVSU dan KPID_SUMUT; KI boleh absen di DISKOMINFO_PROVSU dan KI_SUMUT. Izin silang KI ke KPID dan KPID ke KI tetap ditolak. Ketentuan berlaku untuk masuk dan pulang, termasuk perpindahan kantor yang diizinkan.
 

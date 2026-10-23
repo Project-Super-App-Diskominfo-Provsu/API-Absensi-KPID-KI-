@@ -6,6 +6,8 @@ Backend menggunakan modular monolith: satu API Express dengan modul berdasarkan 
 src/
   app.ts                       # Komposisi Express, middleware, dan router
   server.ts                    # Bootstrap koneksi, listener, dan shutdown
+  notification-check.ts        # CLI verifikasi konfigurasi FCM
+  notification-worker.ts       # Worker pengingat check-in FCM
   config/
     env.ts                     # Validasi environment; diteruskan sebagai dependency
   database/
@@ -21,7 +23,10 @@ src/
     auth/
     device/
     face/
-    office/                     # Koordinat dan geofencing PostGIS
+    holiday/                   # Hari libur nasional dan cuti bersama
+    leave/                     # Permohonan izin tidak hadir (sakit/izin/cuti/dinas)
+    notification/              # Pengingat check-in FCM
+    office/                    # Koordinat dan geofencing PostGIS
     sso/
   shared/
     errors/api-error.ts        # Error aplikasi tanpa dependency Express
@@ -81,4 +86,4 @@ Build membersihkan hanya direktori `dist` milik proyek yang targetnya diverifika
 
 Refactor struktur tidak mengubah URL endpoint, matriks kategori-lokasi, perilaku signature/idempotency, atau kebijakan fail-closed. SSO dan biometrik tetap memerlukan konfigurasi operasional; respons 503 ketika layanan tersebut belum siap bukan error kompilasi.
 
-PostgreSQL/PostGIS menyimpan koordinat dan area poligon kantor serta menghitung geofencing melalui ST_Covers/ST_DWithin/ST_Distance pada geometry dan geography dengan spheroid WGS84. Service kantor menerapkan izin kategori, urutan jarak/kode, akurasi, usia GPS, serta validasi poligon. Redis dipakai rate limiter pada komposisi HTTP dan tidak diteruskan ke service absensi/lokasi. Migration 005 menambahkan kolom poligon dan indeks spasial GiST; migration dan baseline lama tidak diubah.
+PostgreSQL/PostGIS menyimpan koordinat dan area poligon kantor serta menghitung geofencing melalui ST_Covers/ST_DWithin/ST_Distance pada geometry dan geography dengan spheroid WGS84. Service kantor menerapkan izin kategori, urutan jarak/kode, akurasi, usia GPS, serta validasi poligon. Redis dipakai rate limiter pada komposisi HTTP dan tidak diteruskan ke service absensi/lokasi. Migration 005 menambahkan kolom poligon dan indeks spasial GiST, 006 mengunci kebijakan buffer 50 meter dan alamat kantor, serta 007 mengisi titik pusat dari pin Google Maps pengguna; migration dan baseline lama tidak diubah.

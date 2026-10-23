@@ -17,6 +17,7 @@ import {
   listAdminAttendance,
   listAdminSchedules,
   patchSchedule,
+  generateSchedules,
 } from './admin.service.js';
 
 import {
@@ -24,6 +25,7 @@ import {
   updateUserSchema,
   createUnitSchema,
   scheduleSchema,
+  generateSchedulesSchema,
   scheduleQuerySchema,
   userListQuerySchema,
   adminAttendanceQuerySchema,
@@ -114,6 +116,13 @@ export function createAdminController(pool: Pool) {
       const input = scheduleSchema.parse(req.body);
       const actor = currentUser(req);
       const data = await createSchedule(pool, actor, input);
+      res.status(201).json({ data });
+    },
+
+    async generateSchedules(req: Request, res: Response) {
+      const input = generateSchedulesSchema.parse(req.body);
+      const actor = currentUser(req);
+      const data = await generateSchedules(pool, actor, input);
       res.status(201).json({ data });
     },
 

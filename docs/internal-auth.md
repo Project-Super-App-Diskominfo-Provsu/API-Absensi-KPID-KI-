@@ -74,7 +74,7 @@ npm run db:migrate
 
 Perintah membaca `DATABASE_URL` dari environment/`.env`. Pastikan target koneksinya benar sebelum menjalankan. Migrator mengurutkan nama file SQL, memeriksa ledger dan checksum, lalu menjalankan file yang belum diterapkan. Advisory lock mencegah dua migrator berjalan bersamaan. Semua migrasi yang tertunda dan catatan ledger berada dalam satu transaksi: jika salah satu gagal, perubahan transaksi tersebut dibatalkan. Gunakan SQL yang dapat dijalankan dalam transaksi; operasi seperti `CREATE INDEX CONCURRENTLY` memerlukan prosedur deployment terpisah.
 
-Untuk perubahan berikutnya, buat misalnya `migrations/004_add_employee_phone.sql`:
+Untuk perubahan berikutnya, buat misalnya `migrations/013_add_employee_phone.sql`:
 
 ```sql
 ALTER TABLE users ADD COLUMN phone_number text;

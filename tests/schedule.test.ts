@@ -29,4 +29,46 @@ describe('same-day schedules in Asia/Jakarta', () => {
   ])('rejects inconsistent dates, ordering and invalid timestamps: %j', (times) => {
     expect(scheduleSchema.safeParse({ ...schedule, ...times }).success).toBe(false);
   });
+
+  it('defaults Monday-Thursday to 08:00-16:30 and Friday to 08:00-17:00 when omitted', () => {
+    // 2026-10-26 is Monday
+    const mondayResult = scheduleSchema.safeParse({
+      user_id: schedule.user_id,
+      work_date: '2026-10-26',
+    });
+    expect(mondayResult.success).toBe(true);
+    if (mondayResult.success) {
+      expect(mondayResult.data.starts_at).toBe('2026-10-26T08:00:00+07:00');
+      expect(mondayResult.data.ends_at).toBe('2026-10-26T16:30:00+07:00');
+    }
+
+    // 2026-10-29 is Thursday
+    const thursdayResult = scheduleSchema.safeParse({
+      user_id: schedule.user_id,
+      work_date: '2026-10-29',
+    });
+    expect(thursdayResult.success).toBe(true);
+    if (thursdayResult.success) {
+      expect(thursdayResult.data.starts_at).toBe('2026-10-29T08:00:00+07:00');
+      expect(thursdayResult.data.ends_at).toBe('2026-10-29T16:30:00+07:00');
+    }
+
+    // 2026-10-30 is Friday
+    const fridayResult = scheduleSchema.safeParse({
+      user_id: schedule.user_id,
+      work_date: '2026-10-30',
+    });
+    expect(fridayResult.success).toBe(true);
+    if (fridayResult.success) {
+      expect(fridayResult.data.starts_at).toBe('2026-10-30T08:00:00+07:00');
+      expect(fridayResult.data.ends_at).toBe('2026-10-30T17:00:00+07:00');
+    }
+
+    // 2026-10-25 is Sunday
+    const sundayResult = scheduleSchema.safeParse({
+      user_id: schedule.user_id,
+      work_date: '2026-10-25',
+    });
+    expect(sundayResult.success).toBe(false);
+  });
 });

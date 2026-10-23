@@ -21,6 +21,7 @@ export function adminRoutes(pool: Pool) {
   router.post('/admin/units', roles('SUPER_ADMIN'), controller.createUnit);
   router.get('/admin/audit-logs', roles('SUPER_ADMIN'), controller.listAuditLogs);
   router.post('/admin/schedules', controller.createSchedule);
+  router.post('/admin/schedules/generate', controller.generateSchedules);
   router.get('/schedules', controller.listSchedules);
 
   return router;

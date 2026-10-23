@@ -47,22 +47,61 @@ function workDateInJakarta(value: string): string | null {
   return Number.isFinite(timestamp) ? jakartaDate.format(timestamp) : null;
 }
 
+import { getDefaultWorkHours } from './admin.schedule-policy.js';
+
 export const scheduleSchema = z
   .object({
     user_id: z.uuid(),
     work_date: z.iso.date(),
-    starts_at: z.iso.datetime({ offset: true }),
-    ends_at: z.iso.datetime({ offset: true }),
+    starts_at: z.iso.datetime({ offset: true }).optional(),
+    ends_at: z.iso.datetime({ offset: true }).optional(),
     grace_minutes: z.number().int().min(0).max(120).default(0),
   })
   .strict()
-  .refine((v) => Date.parse(v.ends_at) > Date.parse(v.starts_at))
+  .transform((v, ctx) => {
+    if (!v.starts_at || !v.ends_at) {
+      const defaultHours = getDefaultWorkHours(v.work_date);
+      if (!defaultHours) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['work_date'],
+          message: 'Tanggal merupakan akhir pekan. Tentukan starts_at dan ends_at eksplisit.',
+        });
+        return z.NEVER;
+      }
+      return {
+        ...v,
+        starts_at: v.starts_at ?? defaultHours.starts_at,
+        ends_at: v.ends_at ?? defaultHours.ends_at,
+      };
+    }
+    return {
+      ...v,
+      starts_at: v.starts_at,
+      ends_at: v.ends_at,
+    };
+  })
+  .refine(
+    (v) => Date.parse(v.ends_at) > Date.parse(v.starts_at),
+    'ends_at must be after starts_at.',
+  )
   .refine(
     (v) =>
       workDateInJakarta(v.starts_at) === v.work_date &&
       workDateInJakarta(v.ends_at) === v.work_date,
     'Schedule start and end must fall on work_date in Asia/Jakarta.',
   );
+
+export const generateSchedulesSchema = z
+  .object({
+    user_id: z.uuid().optional(),
+    from: z.iso.date(),
+    to: z.iso.date(),
+    grace_minutes: z.number().int().min(0).max(120).default(0),
+    skip_holidays: z.boolean().default(true),
+  })
+  .strict()
+  .refine((v) => v.from <= v.to, 'from must not be after to.');
 
 export const scheduleQuerySchema = z.object({ from: z.iso.date(), to: z.iso.date() }).strict();
 

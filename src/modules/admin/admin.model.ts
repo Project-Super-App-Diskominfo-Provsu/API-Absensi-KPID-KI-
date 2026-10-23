@@ -233,3 +233,37 @@ export async function findWorkSchedulesByUserAndRange(
     [userId, from, to],
   );
 }
+
+export async function insertWorkSchedulesBatch(
+  db: Db,
+  rows: Array<{
+    user_id: string;
+    work_date: string;
+    starts_at: string;
+    ends_at: string;
+    grace_minutes: number;
+  }>,
+) {
+  if (!rows.length) return 0;
+  let inserted = 0;
+  for (const row of rows) {
+    const res = await db.query(
+      'INSERT INTO work_schedules(user_id,work_date,starts_at,ends_at,grace_minutes) VALUES($1,$2,$3,$4,$5) ON CONFLICT (user_id,work_date) DO NOTHING',
+      [row.user_id, row.work_date, row.starts_at, row.ends_at, row.grace_minutes],
+    );
+    inserted += res.rowCount ?? 0;
+  }
+  return inserted;
+}
+
+export async function findManagedActiveUsers(db: Db, categoryCode: string | null) {
+  if (categoryCode) {
+    return db.query<{ id: string }>(
+      "SELECT id FROM users WHERE active AND employee_category_code=$1 AND role IN ('EMPLOYEE','VERIFIER')",
+      [categoryCode],
+    );
+  }
+  return db.query<{ id: string }>(
+    "SELECT id FROM users WHERE active AND role IN ('EMPLOYEE','VERIFIER')",
+  );
+}

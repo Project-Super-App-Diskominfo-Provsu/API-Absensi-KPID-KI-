@@ -93,6 +93,16 @@ export async function resolveAttendanceContext(
   const schedule = schedules.rows[0];
   if (!schedule) fail(409, 'SCHEDULE_NOT_FOUND', 'Jadwal kerja hari ini belum tersedia.');
 
+  const activeLeave = await db.query(
+    `SELECT id, category FROM leave_requests
+     WHERE user_id = $1 AND status = 'APPROVED'
+       AND ($2::timestamptz AT TIME ZONE 'Asia/Jakarta')::date BETWEEN start_date AND end_date`,
+    [userId, received],
+  );
+  if (activeLeave.rowCount && activeLeave.rows[0]?.category !== 'DINAS_LUAR') {
+    fail(409, 'ON_LEAVE', 'Pegawai sedang dalam masa izin/cuti yang telah disetujui.');
+  }
+
   const existing = await findExistingAttendances(db, userId, schedule.id);
   if (existing.rows.some((v) => v.type === purpose)) {
     fail(409, 'DUPLICATE_ATTENDANCE', 'Absensi jenis ini sudah tercatat.');
