@@ -24,6 +24,7 @@ import { spawn } from 'node:child_process';
 const databaseName = `absensi_test_${randomUUID().replaceAll('-', '')}`;
 const adminUrl =
   process.env.TEST_DATABASE_URL ??
+  process.env.DATABASE_URL ??
   'postgresql://absensi:local-development-only@localhost:55432/absensi';
 const adminPool = new Pool({ connectionString: adminUrl });
 const testUrl = new URL(adminUrl);
@@ -1181,6 +1182,7 @@ describe('internal login hardening', () => {
       database: true,
       redis: true,
       face_worker: false,
+      notification_worker: false,
     });
     const email = (await pool.query('SELECT email FROM users WHERE id=$1', [admin])).rows[0].email;
     const session = await request(scoped)
@@ -1194,6 +1196,47 @@ describe('internal login hardening', () => {
           .auth(session.body.data.access_token, { type: 'bearer' })
       ).status,
     ).toBe(200);
+  });
+  it('evaluates notification worker readiness in /ready when FCM is enabled', async () => {
+    let notifReady = false;
+    const fcmConfig = readConfig({
+      NODE_ENV: 'test',
+      DATABASE_URL: config.DATABASE_URL,
+      REDIS_URL: config.REDIS_URL,
+      JWT_SECRET: config.JWT_SECRET,
+      SSO_ENABLED: 'false',
+      FCM_ENABLED: 'true',
+    });
+    const scoped = createApp(
+      pool,
+      redis,
+      fcmConfig,
+      {
+        ready: async () => true,
+        observe: async () => observation,
+      },
+      undefined,
+      undefined,
+      async () => notifReady,
+    );
+    const down = await request(scoped).get('/ready');
+    expect(down.status).toBe(503);
+    expect(down.body.data).toMatchObject({
+      database: true,
+      redis: true,
+      face_worker: true,
+      notification_worker: false,
+    });
+
+    notifReady = true;
+    const up = await request(scoped).get('/ready');
+    expect(up.status).toBe(200);
+    expect(up.body.data).toMatchObject({
+      database: true,
+      redis: true,
+      face_worker: true,
+      notification_worker: true,
+    });
   });
   it('rejects enrollment and both attendance operations without the encryption key', async () => {
     let observations = 0;

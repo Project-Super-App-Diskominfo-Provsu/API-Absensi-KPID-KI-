@@ -29,6 +29,19 @@ import { holidayRoutes } from './modules/holiday/holiday.route.js';
 import { leaveRoutes } from './modules/leave/leave.route.js';
 import { readCookie, WEB_REFRESH_COOKIE } from './modules/auth/auth.web.middleware.js';
 
+export type NotificationReadinessChecker = (url: string) => Promise<boolean>;
+
+export async function checkNotificationReady(url: string): Promise<boolean> {
+  try {
+    const result = await fetch(new URL('/ready', url), {
+      signal: AbortSignal.timeout(2000),
+    });
+    return result.ok;
+  } catch {
+    return false;
+  }
+}
+
 export function createApp(
   pool: Pool,
   redis: RedisClientType,
@@ -36,6 +49,7 @@ export function createApp(
   engine: FaceEngine = new HttpFaceEngine(config),
   ssoProvider?: SsoProvider,
   googleProvider?: GoogleProvider,
+  checkNotificationWorkerReady: NotificationReadinessChecker = checkNotificationReady,
 ) {
   if (!redis.isReady) throw new Error('Connect Redis before creating the application.');
   const app = express();
@@ -95,13 +109,22 @@ export function createApp(
       pool.query('SELECT PostGIS_Version() FROM category_office_permissions LIMIT 1'),
       redis.ping(),
       engine.ready(),
+      checkNotificationWorkerReady(config.NOTIFICATION_WORKER_URL),
     ]);
     const db = result[0].status === 'fulfilled',
       cache = result[1].status === 'fulfilled',
-      face = result[2].status === 'fulfilled' && result[2].value;
-    res
-      .status(db && cache && face ? 200 : 503)
-      .json({ data: { database: db, redis: cache, face_worker: face } });
+      face = result[2].status === 'fulfilled' && Boolean(result[2].value),
+      notif = result[3].status === 'fulfilled' && Boolean(result[3].value);
+    const ready =
+      config.FCM_ENABLED === 'true' ? db && cache && face && notif : db && cache && face;
+    res.status(ready ? 200 : 503).json({
+      data: {
+        database: db,
+        redis: cache,
+        face_worker: face,
+        notification_worker: notif,
+      },
+    });
   });
   app.use((req, res, next) => {
     if (config.NODE_ENV === 'production' && !req.secure) {

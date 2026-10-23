@@ -11,6 +11,7 @@ import { migrateDatabase, verifyDatabaseSchema } from '../src/database/migrate.j
 
 const adminUrl =
   process.env.TEST_DATABASE_URL ??
+  process.env.DATABASE_URL ??
   'postgresql://absensi:local-development-only@localhost:55432/absensi';
 const admin = new Pool({ connectionString: adminUrl });
 let databaseName: string;

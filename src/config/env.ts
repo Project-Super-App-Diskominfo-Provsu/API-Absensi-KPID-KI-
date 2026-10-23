@@ -78,6 +78,7 @@ const schema = z
       .default('none'),
     FACE_WORKER_URL: serviceUrl(['http:', 'https:']).default('http://localhost:8000'),
     FACE_WORKER_TOKEN: z.string().default(''),
+    NOTIFICATION_WORKER_URL: serviceUrl(['http:', 'https:']).default('http://localhost:8001'),
     FACE_MODEL_VERSION: z.string().default(''),
     FACE_MATCH_THRESHOLD: score,
     FACE_REVIEW_THRESHOLD: score,
