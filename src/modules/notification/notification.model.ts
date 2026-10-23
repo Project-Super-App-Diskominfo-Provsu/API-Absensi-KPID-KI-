@@ -93,6 +93,8 @@ export interface ReminderContext {
   employee_category_code: string | null;
   deadline: Date;
   checked_in: boolean;
+  on_holiday: boolean;
+  on_leave: boolean;
   device_id: string | null;
   token: string | null;
   session_active: boolean;
@@ -102,6 +104,9 @@ export async function reminderContext(db: Db, scheduleId: string, project: strin
     `SELECT u.active,u.role,u.employee_category_code,
       s.starts_at+make_interval(mins=>s.grace_minutes) AS deadline,
       EXISTS(SELECT 1 FROM attendances a WHERE a.user_id=u.id AND a.schedule_id=s.id AND a.type='CHECK_IN') AS checked_in,
+      EXISTS(SELECT 1 FROM holidays h WHERE h.holiday_date=s.work_date) AS on_holiday,
+      EXISTS(SELECT 1 FROM leave_requests l WHERE l.user_id=u.id AND l.status='APPROVED'
+        AND s.work_date BETWEEN l.start_date AND l.end_date) AS on_leave,
       d.id AS device_id,p.token,
       EXISTS(SELECT 1 FROM refresh_sessions r WHERE r.user_id=u.id AND r.family_id=p.session_family_id
         AND r.client_type='MOBILE' AND r.revoked_at IS NULL AND r.expires_at>$3) AS session_active

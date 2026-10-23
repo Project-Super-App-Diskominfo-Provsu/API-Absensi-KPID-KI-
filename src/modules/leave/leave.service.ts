@@ -26,6 +26,10 @@ export async function submitLeave(
   },
 ) {
   return transaction(pool, async (db) => {
+    const owner = await db.query('SELECT id FROM users WHERE id=$1 AND active FOR UPDATE', [
+      user.id,
+    ]);
+    if (!owner.rowCount) fail(403, 'USER_INACTIVE', 'Akun tidak aktif.');
     const overlapping = await findOverlappingLeave(db, user.id, input.start_date, input.end_date);
     if (overlapping.rowCount) {
       fail(
@@ -70,6 +74,7 @@ export async function listUserLeaves(
 
 export async function cancelUserLeave(pool: Pool, user: User, id: string) {
   return transaction(pool, async (db) => {
+    await db.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [user.id]);
     const existing = await findLeaveRequestById(db, id, true);
     if (!existing.rowCount) {
       fail(404, 'NOT_FOUND', 'Permohonan izin tidak ditemukan.');
@@ -104,6 +109,9 @@ export async function adminListLeaves(
     offset: number;
   },
 ) {
+  if (actor.role !== 'SUPER_ADMIN' && !actor.employee_category_code) {
+    fail(403, 'FORBIDDEN', 'Admin belum memiliki kategori kewenangan.');
+  }
   const categoryCode = actor.role === 'SUPER_ADMIN' ? null : actor.employee_category_code;
   return findAdminLeaveRequests(
     pool,
@@ -113,6 +121,7 @@ export async function adminListLeaves(
       from: query.from,
       to: query.to,
       userId: query.user_id,
+      category: query.category,
     },
     query.limit,
     query.offset,
@@ -129,6 +138,13 @@ export async function reviewLeave(
   },
 ) {
   return transaction(pool, async (db) => {
+    const target = (await findLeaveRequestById(db, id)).rows[0];
+    if (!target) fail(404, 'NOT_FOUND', 'Permohonan izin tidak ditemukan.');
+    if (target.user_id === actor.id) {
+      fail(403, 'SELF_APPROVAL_FORBIDDEN', 'Permohonan sendiri harus ditinjau admin lain.');
+    }
+    // Use the same user-first lock order as attendance and leave submission.
+    await db.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [target.user_id]);
     const existing = await findLeaveRequestById(db, id, true);
     if (!existing.rowCount) {
       fail(404, 'NOT_FOUND', 'Permohonan izin tidak ditemukan.');
@@ -136,12 +152,36 @@ export async function reviewLeave(
     const leave = existing.rows[0]!;
     if (
       actor.role !== 'SUPER_ADMIN' &&
-      leave.employee_category_code !== actor.employee_category_code
+      (!actor.employee_category_code ||
+        leave.employee_category_code !== actor.employee_category_code)
     ) {
       fail(403, 'FORBIDDEN', 'Permohonan izin di luar kewenangan admin.');
     }
     if (leave.status !== 'PENDING') {
       fail(409, 'LEAVE_ALREADY_REVIEWED', 'Permohonan izin ini sudah ditinjau sebelumnya.');
+    }
+    if (input.status === 'APPROVED') {
+      const overlap = await db.query(
+        `SELECT id FROM leave_requests WHERE user_id=$1 AND id<>$2 AND status='APPROVED'
+         AND start_date<=$4::date AND end_date>=$3::date LIMIT 1`,
+        [leave.user_id, id, leave.start_date, leave.end_date],
+      );
+      if (overlap.rowCount)
+        fail(409, 'LEAVE_OVERLAP', 'Sudah ada izin disetujui pada tanggal tersebut.');
+    }
+    if (input.status === 'APPROVED' && leave.category !== 'DINAS_LUAR') {
+      const attendance = await db.query(
+        `SELECT a.id FROM attendances a JOIN work_schedules s ON s.id=a.schedule_id
+         WHERE a.user_id=$1 AND s.work_date BETWEEN $2::date AND $3::date LIMIT 1`,
+        [leave.user_id, leave.start_date, leave.end_date],
+      );
+      if (attendance.rowCount) {
+        fail(
+          409,
+          'LEAVE_ATTENDANCE_CONFLICT',
+          'Rentang izin sudah memiliki absensi. Tinjau tanggal izin.',
+        );
+      }
     }
     const updated = await updateLeaveRequestStatus(
       db,

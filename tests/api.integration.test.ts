@@ -2450,4 +2450,122 @@ describe('FCM token lifecycle and check-in reminder worker', () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]!.notificationId).toBe(claimed!.id);
   });
+  it.each(['holiday', 'leave'])(
+    'skips a queued reminder after a new %s is recorded',
+    async (kind) => {
+      await prepared();
+      await enqueueReminders(pool, pushConfig.FIREBASE_PROJECT_ID, at('07:54:00'));
+      expect((await pool.query('SELECT id FROM notification_deliveries')).rowCount).toBe(1);
+      if (kind === 'holiday') {
+        await pool.query(
+          "INSERT INTO holidays(holiday_date,name,type) VALUES(($1::timestamptz AT TIME ZONE 'Asia/Jakarta')::date,'Pilot holiday','NATIONAL_HOLIDAY')",
+          [at('08:00:00')],
+        );
+      } else {
+        await pool.query(
+          "INSERT INTO leave_requests(user_id,category,start_date,end_date,notes,status) VALUES($1,'IZIN',($2::timestamptz AT TIME ZONE 'Asia/Jakarta')::date,($2::timestamptz AT TIME ZONE 'Asia/Jakarta')::date,'Pilot leave','APPROVED')",
+          [user, at('08:00:00')],
+        );
+      }
+      try {
+        await run('07:55:00');
+        expect(sent).toHaveLength(0);
+        expect(
+          (await pool.query('SELECT status,last_error FROM notification_deliveries')).rows[0],
+        ).toEqual({ status: 'SKIPPED', last_error: kind === 'holiday' ? 'HOLIDAY' : 'ON_LEAVE' });
+      } finally {
+        if (kind === 'holiday') await pool.query("DELETE FROM holidays WHERE name='Pilot holiday'");
+      }
+    },
+  );
+});
+
+describe('leave authorization, attendance conflicts and concurrency', () => {
+  const payload = {
+    category: 'IZIN',
+    start_date: '2035-01-02',
+    end_date: '2035-01-03',
+    notes: 'Approved pilot test request',
+  };
+  const submit = () =>
+    request(app).post('/api/v1/leaves').auth(access, { type: 'bearer' }).send(payload);
+  const review = (id: string, bearer = adminAccess) =>
+    request(app)
+      .patch('/api/v1/admin/leaves/' + id)
+      .auth(bearer, { type: 'bearer' })
+      .send({ status: 'APPROVED', review_notes: 'Pilot verification' });
+
+  it('serializes simultaneous overlapping submissions', async () => {
+    const responses = await Promise.all([submit(), submit()]);
+    expect(responses.map((r) => r.status).sort()).toEqual([201, 409]);
+    expect(responses.find((r) => r.status === 409)!.body.error.code).toBe('LEAVE_OVERLAP');
+    expect((await pool.query('SELECT id FROM leave_requests')).rowCount).toBe(1);
+  });
+  it('forbids a super admin reviewing their own request', async () => {
+    const own = await request(app)
+      .post('/api/v1/leaves')
+      .auth(adminAccess, { type: 'bearer' })
+      .send(payload);
+    expect(own.status, own.text).toBe(201);
+    const response = await review(own.body.data.id);
+    expect(response.status).toBe(403);
+    expect(response.body.error.code).toBe('SELF_APPROVAL_FORBIDDEN');
+  });
+  it('permits only one concurrent approval of legacy overlapping requests', async () => {
+    const rows = await pool.query(
+      "INSERT INTO leave_requests(user_id,category,start_date,end_date,notes) VALUES($1,'IZIN','2035-01-02','2035-01-03','Legacy request one'),($1,'CUTI','2035-01-02','2035-01-03','Legacy request two') RETURNING id",
+      [user],
+    );
+    const responses = await Promise.all(rows.rows.map((r) => review(r.id)));
+    expect(responses.map((r) => r.status).sort()).toEqual([200, 409]);
+    expect(
+      (await pool.query("SELECT id FROM leave_requests WHERE status='APPROVED'")).rowCount,
+    ).toBe(1);
+  });
+  it('rejects full-day leave approval after check-in and preserves checkout', async () => {
+    const checkin = await (await capture()).send();
+    expect(checkin.status, checkin.text).toBe(201);
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jakarta' }).format(new Date());
+    const leave = await request(app)
+      .post('/api/v1/leaves')
+      .auth(access, { type: 'bearer' })
+      .send({ ...payload, start_date: today, end_date: today });
+    expect(leave.status, leave.text).toBe(201);
+    const response = await review(leave.body.data.id);
+    expect(response.status, response.text).toBe(409);
+    expect(response.body.error.code).toBe('LEAVE_ATTENDANCE_CONFLICT');
+    expect((await (await capture('CHECK_OUT')).send()).status).toBe(201);
+  });
+  it('allows closing existing attendance even if legacy data has an approved leave', async () => {
+    expect((await (await capture()).send()).status).toBe(201);
+    await pool.query(
+      "INSERT INTO leave_requests(user_id,category,start_date,end_date,notes,status) VALUES($1,'IZIN',(now() AT TIME ZONE 'Asia/Jakarta')::date,(now() AT TIME ZONE 'Asia/Jakarta')::date,'Legacy approved leave','APPROVED')",
+      [user],
+    );
+    expect((await (await capture('CHECK_OUT')).send()).status).toBe(201);
+  });
+  it('blocks check-in on approved full-day leave', async () => {
+    await pool.query(
+      "INSERT INTO leave_requests(user_id,category,start_date,end_date,notes,status) VALUES($1,'IZIN',(now() AT TIME ZONE 'Asia/Jakarta')::date,(now() AT TIME ZONE 'Asia/Jakarta')::date,'Approved pilot leave','APPROVED')",
+      [user],
+    );
+    const response = await (await capture()).send();
+    expect(response.status).toBe(409);
+    expect(response.body.error.code).toBe('ON_LEAVE');
+  });
+  it('prevents category admins from reviewing another placement', async () => {
+    const leave = await submit();
+    await pool.query("UPDATE users SET role='ADMIN',employee_category_code='KI' WHERE id=$1", [
+      admin,
+    ]);
+    expect((await review(leave.body.data.id)).status).toBe(403);
+  });
+  it('applies the advertised leave category filter', async () => {
+    await submit();
+    const response = await request(app)
+      .get('/api/v1/admin/leaves?category=CUTI')
+      .auth(adminAccess, { type: 'bearer' });
+    expect(response.status).toBe(200);
+    expect(response.body.data).toEqual([]);
+  });
 });

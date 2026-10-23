@@ -99,7 +99,7 @@ export async function resolveAttendanceContext(
        AND ($2::timestamptz AT TIME ZONE 'Asia/Jakarta')::date BETWEEN start_date AND end_date`,
     [userId, received],
   );
-  if (activeLeave.rowCount && activeLeave.rows[0]?.category !== 'DINAS_LUAR') {
+  if (purpose === 'CHECK_IN' && activeLeave.rows.some((leave) => leave.category !== 'DINAS_LUAR')) {
     fail(409, 'ON_LEAVE', 'Pegawai sedang dalam masa izin/cuti yang telah disetujui.');
   }
 

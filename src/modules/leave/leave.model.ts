@@ -69,7 +69,7 @@ export async function findLeaveRequestById(db: Db, id: string, forUpdate = false
             l.reviewed_by,l.reviewed_at,l.review_notes,l.created_at,l.updated_at,
             u.name as user_name,u.employee_number,u.employee_category_code
      FROM leave_requests l JOIN users u ON u.id=l.user_id
-     WHERE l.id=$1${forUpdate ? ' FOR UPDATE' : ''}`,
+     WHERE l.id=$1${forUpdate ? ' FOR UPDATE OF l' : ''}`,
     [id],
   );
 }
@@ -123,6 +123,7 @@ export async function findAdminLeaveRequests(
   db: Db,
   filter: {
     categoryCode?: string | null;
+    category?: LeaveCategory;
     status?: string;
     from?: string;
     to?: string;
@@ -141,6 +142,10 @@ export async function findAdminLeaveRequests(
   if (filter.status) {
     values.push(filter.status);
     conditions.push(`l.status = $${values.length}`);
+  }
+  if (filter.category) {
+    values.push(filter.category);
+    conditions.push(`l.category = $${values.length}`);
   }
   if (filter.from) {
     values.push(filter.from);

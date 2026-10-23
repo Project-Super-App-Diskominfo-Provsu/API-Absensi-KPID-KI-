@@ -89,6 +89,8 @@ export async function processCheckInReminders(
     )
       reason = 'ACCOUNT_INELIGIBLE';
     else if (context.checked_in) reason = 'ALREADY_CHECKED_IN';
+    else if (context.on_holiday) reason = 'HOLIDAY';
+    else if (context.on_leave) reason = 'ON_LEAVE';
     else if (context.deadline.getTime() <= now.getTime()) reason = 'EXPIRED';
     else if (!context.token || !context.device_id) reason = 'NO_PUSH_TOKEN';
     else if (!context.session_active) reason = 'SESSION_INACTIVE';
