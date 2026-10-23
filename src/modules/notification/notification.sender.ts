@@ -64,17 +64,32 @@ export function pushError(error: unknown) {
   return { code, invalid, retryable };
 }
 
-export async function createFirebaseSender(projectId: string, credentialPath: string) {
+export async function createFirebaseSender(
+  projectId: string,
+  credentialPath?: string,
+  credentialBase64?: string,
+) {
   let credentials;
   try {
+    let rawJson: string;
+    if (credentialBase64 && credentialBase64.trim().length > 0) {
+      rawJson = Buffer.from(credentialBase64.trim(), 'base64').toString('utf8');
+    } else if (credentialPath && credentialPath.trim().startsWith('{')) {
+      rawJson = credentialPath.trim();
+    } else if (credentialPath && credentialPath.trim().length > 0) {
+      rawJson = await readFile(credentialPath.trim(), 'utf8');
+    } else {
+      throw new Error('Credential source is missing');
+    }
+
     credentials = z
       .object({
         type: z.literal('service_account'),
         project_id: z.literal(projectId),
-        client_email: z.email(),
+        client_email: z.string().email(),
         private_key: z.string().min(1),
       })
-      .parse(JSON.parse(await readFile(credentialPath, 'utf8')));
+      .parse(JSON.parse(rawJson));
     if (!projectId || createPrivateKey(credentials.private_key).asymmetricKeyType !== 'rsa')
       throw new Error('Invalid key');
   } catch {

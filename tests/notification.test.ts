@@ -58,6 +58,13 @@ describe('FCM reminder payload', () => {
     await expect(
       createFirebaseSender('test-project', 'missing-service-account.json'),
     ).rejects.toThrow('Firebase service account is unavailable');
+    await expect(
+      createFirebaseSender(
+        'test-project',
+        undefined,
+        Buffer.from('invalid-json').toString('base64'),
+      ),
+    ).rejects.toThrow('Firebase service account is unavailable');
   });
   it('requires explicit FCM enablement and hides environment values in validation errors', () => {
     expect(() =>
@@ -71,5 +78,14 @@ describe('FCM reminder payload', () => {
     } catch (error) {
       expect(String(error)).not.toContain('private-secret-value');
     }
+  });
+  it('accepts base64 service account configuration in readNotificationConfig', () => {
+    const config = readNotificationConfig({
+      DATABASE_URL: 'postgresql://user:secret@localhost/db',
+      FCM_ENABLED: 'true',
+      FIREBASE_PROJECT_ID: 'absensi-439de',
+      FIREBASE_SERVICE_ACCOUNT_BASE64: 'e30=',
+    });
+    expect(config.FIREBASE_SERVICE_ACCOUNT_BASE64).toBe('e30=');
   });
 });

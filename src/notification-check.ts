@@ -6,6 +6,7 @@ try {
   const sender = await createFirebaseSender(
     config.FIREBASE_PROJECT_ID,
     config.GOOGLE_APPLICATION_CREDENTIALS,
+    config.FIREBASE_SERVICE_ACCOUNT_BASE64,
   );
   await sender.close();
   console.log('Firebase project and service account format validated. No push notification sent.');

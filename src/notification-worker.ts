@@ -16,6 +16,7 @@ try {
   const sender = await createFirebaseSender(
     config.FIREBASE_PROJECT_ID,
     config.GOOGLE_APPLICATION_CREDENTIALS,
+    config.FIREBASE_SERVICE_ACCOUNT_BASE64,
   );
   let stopping = false,
     lastSuccess = 0;
