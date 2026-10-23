@@ -314,7 +314,7 @@ export async function generateSchedules(
           }
         }
       }
-      current.setDate(current.getDate() + 1);
+      current.setUTCDate(current.getUTCDate() + 1);
     }
 
     const inserted = await insertWorkSchedulesBatch(db, rowsToInsert);

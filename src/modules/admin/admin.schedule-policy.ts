@@ -4,8 +4,7 @@ export interface WorkHours {
 }
 
 export function getJakartaDayOfWeek(dateStr: string): number {
-  const date = new Date(`${dateStr}T12:00:00+07:00`);
-  return date.getDay(); // 0: Sunday, 1: Monday, ..., 5: Friday, 6: Saturday
+  return new Date(`${dateStr}T00:00:00Z`).getUTCDay();
 }
 
 export function isWeekend(dateStr: string): boolean {

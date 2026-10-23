@@ -14,6 +14,9 @@ const adminUrl =
   process.env.DATABASE_URL ??
   'postgresql://absensi:local-development-only@localhost:55432/absensi';
 const admin = new Pool({ connectionString: adminUrl });
+const currentMigrationCount = (await readdir(new URL('../migrations/', import.meta.url))).filter(
+  (name) => name.endsWith('.sql') && name !== '001_initial.sql',
+).length;
 let databaseName: string;
 let pool: Pool;
 let fixtureDirectory: string | undefined;
@@ -47,6 +50,69 @@ afterAll(async () => {
 });
 
 describe('database migrations', () => {
+  it('corrects seeded holidays without changing prior ledger, schedules or operator overrides', async () => {
+    fixtureDirectory = await mkdtemp(join(tmpdir(), 'absensi-calendar-upgrade-'));
+    for (const name of await readdir(new URL('../migrations/', import.meta.url))) {
+      if (name.endsWith('.sql') && name < '014_')
+        await copyFile(
+          new URL('../migrations/' + name, import.meta.url),
+          join(fixtureDirectory, name),
+        );
+    }
+    await migrateDatabase(pool, pathToFileURL(fixtureDirectory + '/'));
+    const ledger = (await pool.query('SELECT * FROM schema_migrations ORDER BY name')).rows;
+    await pool.query(
+      "UPDATE holidays SET name='Operator policy override' WHERE holiday_date='2026-05-28'",
+    );
+    const user = (
+      await pool.query(
+        "INSERT INTO users(employee_number,name,email,password_hash,role,employee_category_code) VALUES('CALENDAR','Existing employee','calendar@example.test','fixture','EMPLOYEE','KI') RETURNING id",
+      )
+    ).rows[0];
+    await pool.query(
+      "INSERT INTO work_schedules(user_id,work_date,starts_at,ends_at) VALUES($1,'2026-12-24','2026-12-24T08:00:00+07:00','2026-12-24T16:30:00+07:00')",
+      [user.id],
+    );
+    const schedules = (await pool.query('SELECT * FROM work_schedules')).rows;
+    expect(await migrateDatabase(pool)).toEqual(['014_correct_2026_holidays.sql']);
+    expect(
+      (await pool.query("SELECT * FROM schema_migrations WHERE name<'014_' ORDER BY name")).rows,
+    ).toEqual(ledger);
+    expect((await pool.query('SELECT * FROM work_schedules')).rows).toEqual(schedules);
+    expect(
+      (await pool.query("SELECT name FROM holidays WHERE holiday_date='2026-05-28'")).rows[0].name,
+    ).toBe('Operator policy override');
+    const corrected = (
+      await pool.query(
+        "SELECT holiday_date::text,name,type FROM holidays WHERE holiday_date IN ('2026-03-19','2026-03-20','2026-05-27','2026-05-31','2026-12-24') ORDER BY holiday_date",
+      )
+    ).rows;
+    expect(corrected).toEqual([
+      {
+        holiday_date: '2026-03-19',
+        name: 'Hari Suci Nyepi Tahun Baru Saka 1948',
+        type: 'NATIONAL_HOLIDAY',
+      },
+      {
+        holiday_date: '2026-03-20',
+        name: 'Cuti Bersama Hari Raya Idul Fitri 1447 H',
+        type: 'JOINT_LEAVE',
+      },
+      {
+        holiday_date: '2026-05-27',
+        name: 'Hari Raya Idul Adha 1447 Hijriah',
+        type: 'NATIONAL_HOLIDAY',
+      },
+      { holiday_date: '2026-05-31', name: 'Hari Raya Waisak 2570 BE', type: 'NATIONAL_HOLIDAY' },
+      {
+        holiday_date: '2026-12-24',
+        name: 'Cuti Bersama Kelahiran Yesus Kristus',
+        type: 'JOINT_LEAVE',
+      },
+    ]);
+    expect((await pool.query('SELECT id FROM holidays')).rowCount).toBe(25);
+    expect(await migrateDatabase(pool)).toEqual([]);
+  });
   it('adds notification tables without changing existing users or sessions', async () => {
     fixtureDirectory = await mkdtemp(join(tmpdir(), 'absensi-notification-upgrade-'));
     for (const name of await readdir(new URL('../migrations/', import.meta.url))) {
@@ -71,6 +137,7 @@ describe('database migrations', () => {
     expect(await migrateDatabase(pool)).toEqual([
       '012_checkin_notifications.sql',
       '013_holidays_and_leaves.sql',
+      '014_correct_2026_holidays.sql',
     ]);
     expect((await pool.query('SELECT * FROM users')).rows).toEqual(beforeUsers);
     expect((await pool.query('SELECT * FROM refresh_sessions')).rows).toEqual(beforeSessions);
@@ -88,7 +155,10 @@ describe('database migrations', () => {
     }
     await migrateDatabase(pool, pathToFileURL(fixtureDirectory + '/'));
     const beforeUsers = (await pool.query('SELECT * FROM users')).rows;
-    expect(await migrateDatabase(pool)).toEqual(['013_holidays_and_leaves.sql']);
+    expect(await migrateDatabase(pool)).toEqual([
+      '013_holidays_and_leaves.sql',
+      '014_correct_2026_holidays.sql',
+    ]);
     expect((await pool.query('SELECT * FROM users')).rows).toEqual(beforeUsers);
     expect((await pool.query('SELECT 1 FROM holidays')).rowCount).toBeGreaterThan(0);
     expect((await pool.query('SELECT 1 FROM leave_requests')).rowCount).toBe(0);
@@ -111,6 +181,7 @@ describe('database migrations', () => {
       '011_google_email_linking.sql',
       '012_checkin_notifications.sql',
       '013_holidays_and_leaves.sql',
+      '014_correct_2026_holidays.sql',
     ]);
     const { google_email_linking_allowed, ...after } = (await pool.query('SELECT * FROM users'))
       .rows[0];
@@ -142,6 +213,7 @@ describe('database migrations', () => {
       '011_google_email_linking.sql',
       '012_checkin_notifications.sql',
       '013_holidays_and_leaves.sql',
+      '014_correct_2026_holidays.sql',
     ]);
     const { client_type, ...after } = (await pool.query('SELECT * FROM refresh_sessions')).rows[0];
     expect(client_type).toBe('MOBILE');
@@ -244,6 +316,7 @@ describe('database migrations', () => {
       '011_google_email_linking.sql',
       '012_checkin_notifications.sql',
       '013_holidays_and_leaves.sql',
+      '014_correct_2026_holidays.sql',
     ]);
     expect((await pool.query('SELECT * FROM work_schedules')).rows).toEqual(corrected);
     expect(
@@ -283,6 +356,7 @@ describe('database migrations', () => {
       '011_google_email_linking.sql',
       '012_checkin_notifications.sql',
       '013_holidays_and_leaves.sql',
+      '014_correct_2026_holidays.sql',
     ]);
     const afterOffices = (await pool.query('SELECT * FROM offices ORDER BY id')).rows;
     expect(afterOffices.map(({ polygon, address, ...rest }) => rest)).toEqual(offices);
@@ -291,7 +365,7 @@ describe('database migrations', () => {
     expect(
       (
         await pool.query(
-          "SELECT * FROM schema_migrations WHERE name NOT IN ('004_postgis_geofencing.sql', '005_office_polygon.sql', '006_office_geofence_policy.sql', '007_office_map_centers.sql', '008_face_enrollment_version.sql', '009_same_day_schedules.sql', '010_web_and_google_auth.sql', '011_google_email_linking.sql', '012_checkin_notifications.sql', '013_holidays_and_leaves.sql') ORDER BY name",
+          "SELECT * FROM schema_migrations WHERE name NOT IN ('004_postgis_geofencing.sql', '005_office_polygon.sql', '006_office_geofence_policy.sql', '007_office_map_centers.sql', '008_face_enrollment_version.sql', '009_same_day_schedules.sql', '010_web_and_google_auth.sql', '011_google_email_linking.sql', '012_checkin_notifications.sql', '013_holidays_and_leaves.sql', '014_correct_2026_holidays.sql') ORDER BY name",
         )
       ).rows,
     ).toEqual(ledger);
@@ -364,8 +438,11 @@ describe('database migrations', () => {
       '011_google_email_linking.sql',
       '012_checkin_notifications.sql',
       '013_holidays_and_leaves.sql',
+      '014_correct_2026_holidays.sql',
     ]);
-    expect((await pool.query('SELECT name,checksum FROM schema_migrations')).rowCount).toBe(13);
+    expect((await pool.query('SELECT name,checksum FROM schema_migrations')).rowCount).toBe(
+      currentMigrationCount,
+    );
     await expect(
       pool.query(
         'SELECT u.auth_mode,s.expires_at FROM users u LEFT JOIN refresh_sessions s ON false LIMIT 0',
@@ -425,8 +502,13 @@ describe('database migrations', () => {
 
   it('serializes simultaneous migrations from multiple replicas', async () => {
     const results = await Promise.all([migrateDatabase(pool), migrateDatabase(pool)]);
-    expect(results.map((names) => names.length).sort()).toEqual([0, 12]);
-    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(12);
+    expect(results.map((names) => names.length).sort((a, b) => a - b)).toEqual([
+      0,
+      currentMigrationCount,
+    ]);
+    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(
+      currentMigrationCount,
+    );
     expect((await pool.query('SELECT * FROM offices')).rowCount).toBe(3);
   });
 
@@ -440,7 +522,9 @@ describe('database migrations', () => {
       'Applied migration changed: 001_initial_postgres.sql',
     );
     expect((await pool.query("SELECT * FROM units WHERE name='Preserved unit'")).rowCount).toBe(1);
-    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(12);
+    expect((await pool.query('SELECT * FROM schema_migrations')).rowCount).toBe(
+      currentMigrationCount,
+    );
   });
 
   it('rolls back all pending schema changes and the ledger if any SQL fails', async () => {

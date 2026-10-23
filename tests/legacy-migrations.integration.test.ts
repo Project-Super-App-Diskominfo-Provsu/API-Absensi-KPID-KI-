@@ -54,11 +54,12 @@ describe.skipIf(!process.env.TEST_LEGACY_DATABASE_URL)('legacy PostGIS upgrade',
       '011_google_email_linking.sql',
       '012_checkin_notifications.sql',
       '013_holidays_and_leaves.sql',
+      '014_correct_2026_holidays.sql',
     ]);
     expect(
       (
         await pool.query(
-          'SELECT * FROM schema_migrations WHERE name NOT IN ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ORDER BY name',
+          'SELECT * FROM schema_migrations WHERE name NOT IN ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ORDER BY name',
           [
             '003_office_coordinates.sql',
             '004_postgis_geofencing.sql',
@@ -71,6 +72,7 @@ describe.skipIf(!process.env.TEST_LEGACY_DATABASE_URL)('legacy PostGIS upgrade',
             '011_google_email_linking.sql',
             '012_checkin_notifications.sql',
             '013_holidays_and_leaves.sql',
+            '014_correct_2026_holidays.sql',
           ],
         )
       ).rows,

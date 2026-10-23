@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { scheduleSchema } from '../src/modules/admin/admin.schema.js';
+import { spawnSync } from 'node:child_process';
 
 const schedule = {
   user_id: '41b2809e-59b4-44fd-adb5-40acb86a66a5',
@@ -7,6 +8,29 @@ const schedule = {
   starts_at: '2035-01-02T08:00:00+07:00',
   ends_at: '2035-01-02T17:00:00+07:00',
 };
+
+it('uses the calendar day independently of the process timezone', () => {
+  for (const timezone of ['UTC', 'Asia/Jakarta', 'Pacific/Honolulu', 'Pacific/Kiritimati']) {
+    const child = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        '--input-type=module',
+        '-e',
+        `import {getDefaultWorkHours} from './src/modules/admin/admin.schedule-policy.ts';
+       console.log(JSON.stringify(['2026-10-23','2026-10-24','2026-10-26'].map(getDefaultWorkHours)));`,
+      ],
+      { env: { ...process.env, TZ: timezone }, encoding: 'utf8' },
+    );
+    expect(child.status, child.stderr).toBe(0);
+    expect(JSON.parse(child.stdout)).toEqual([
+      { starts_at: '2026-10-23T08:00:00+07:00', ends_at: '2026-10-23T17:00:00+07:00' },
+      null,
+      { starts_at: '2026-10-26T08:00:00+07:00', ends_at: '2026-10-26T16:30:00+07:00' },
+    ]);
+  }
+});
 
 describe('same-day schedules in Asia/Jakarta', () => {
   it.each([
