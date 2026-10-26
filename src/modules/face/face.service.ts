@@ -124,7 +124,11 @@ export async function enrollFace(
       input.consent_version,
     );
     await incrementEnrollmentVersion(db, user.id);
-    await audit(db, user.id, 'FACE_ENROLL_PENDING', inserted.rows[0]!.id);
+    await audit(db, user.id, 'FACE_ENROLL_ACTIVATED', inserted.rows[0]!.id, {
+      activation_method: 'SELF_ENROLLMENT',
+      model_version: first.model_version,
+      consent_version: input.consent_version,
+    });
     return inserted.rows[0]!;
   });
 }

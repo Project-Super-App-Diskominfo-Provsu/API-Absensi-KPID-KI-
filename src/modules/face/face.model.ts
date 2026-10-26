@@ -51,8 +51,8 @@ export async function insertFaceTemplate(
   consentVersion: string,
 ) {
   return db.query<{ id: string; status: string; model_version: string }>(
-    `INSERT INTO face_templates(user_id,encrypted_embedding,model_version,quality_score,consent_version)
-    VALUES($1,$2,$3,$4,$5) RETURNING id,status,model_version`,
+    `INSERT INTO face_templates(user_id,encrypted_embedding,model_version,quality_score,consent_version,status)
+    VALUES($1,$2,$3,$4,$5,'ACTIVE') RETURNING id,status,model_version`,
     [userId, encryptedEmbedding, modelVersion, qualityScore, consentVersion],
   );
 }

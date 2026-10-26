@@ -579,7 +579,7 @@ export const openapi = {
     },
     '/face/enroll': {
       post: operation(
-        'Daftarkan 3–5 foto; menunggu verifikasi admin. Reset/perubahan enrollment saat pemrosesan ditolak 409 FACE_ENROLLMENT_CHANGED; mulai ulang dengan challenge baru.',
+        'Daftarkan 3–5 foto; langsung ACTIVE setelah semua validasi berhasil. Perangkat harus ACTIVE. Reset/perubahan enrollment saat pemrosesan ditolak 409 FACE_ENROLLMENT_CHANGED; mulai ulang dengan challenge baru.',
         {
           multipart: 'Enrollment',
           status: 201,

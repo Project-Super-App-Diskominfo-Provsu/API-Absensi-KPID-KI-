@@ -695,7 +695,7 @@ describe('device and enrollment approvals', () => {
       .send({ public_key: publicKey, platform: 'IOS', signature: 'x' });
     expect(result.status).toBe(400);
   });
-  it('requires approved enrollment before attendance, then accepts the approved template', async () => {
+  it('activates validated self-enrollment and permits attendance immediately', async () => {
     await pool.query('DELETE FROM face_templates WHERE user_id=$1', [user]);
     const nonce = await challenge('ENROLL');
     const images = await Promise.all(
@@ -722,10 +722,35 @@ describe('device and enrollment approvals', () => {
       req = req.attach('images', photo, `capture-${index}.png`);
     const enrolled = await req;
     expect(enrolled.status, enrolled.text).toBe(201);
-    expect(enrolled.body.data.status).toBe('PENDING');
+    expect(enrolled.body.data.status).toBe('ACTIVE');
+    const template = (
+      await pool.query(
+        'SELECT approved_by,encrypted_embedding FROM face_templates WHERE user_id=$1',
+        [user],
+      )
+    ).rows[0];
+    expect(template.approved_by).toBeNull();
+    expect(typeof template.encrypted_embedding).toBe('string');
+    expect(
+      (
+        await pool.query(
+          "SELECT id FROM audit_logs WHERE action='FACE_ENROLL_ACTIVATED' AND actor_id=$1",
+          [user],
+        )
+      ).rowCount,
+    ).toBe(1);
+    expect((await (await capture()).send()).status).toBe(201);
+  });
+  it('preserves explicit admin review for legacy pending enrollment', async () => {
+    await pool.query(
+      "UPDATE face_templates SET status='PENDING',approved_by=NULL WHERE user_id=$1",
+      [user],
+    );
+    const id = (await pool.query('SELECT id FROM face_templates WHERE user_id=$1', [user])).rows[0]
+      .id;
     expect((await (await capture()).send()).body.error.code).toBe('FACE_NOT_ENROLLED');
     const rejected = await request(app)
-      .patch(`/api/v1/admin/face-enrollments/${enrolled.body.data.id}`)
+      .patch(`/api/v1/admin/face-enrollments/${id}`)
       .auth(adminAccess, { type: 'bearer' })
       .send({
         status: 'ACTIVE',
@@ -734,7 +759,7 @@ describe('device and enrollment approvals', () => {
       });
     expect(rejected.body.error.code).toBe('IDENTITY_VERIFICATION_REQUIRED');
     const approved = await request(app)
-      .patch(`/api/v1/admin/face-enrollments/${enrolled.body.data.id}`)
+      .patch(`/api/v1/admin/face-enrollments/${id}`)
       .auth(adminAccess, { type: 'bearer' })
       .send({
         status: 'ACTIVE',
@@ -816,10 +841,10 @@ describe('device and enrollment approvals', () => {
     );
     expect(
       (await pool.query('SELECT status FROM face_templates WHERE user_id=$1', [user])).rows,
-    ).toEqual([{ status: 'PENDING' }]);
+    ).toEqual([{ status: 'ACTIVE' }]);
   });
 
-  it('does not create another pending template if a concurrent enrollment was approved during inference', async () => {
+  it('does not create another template if concurrent self-enrollment activates during inference', async () => {
     await pool.query('DELETE FROM face_templates WHERE user_id=$1', [user]);
     const slow = await enrollment();
     let release!: () => void, inferenceStarted!: () => void;
@@ -840,15 +865,7 @@ describe('device and enrollment approvals', () => {
     try {
       const fast = await (await enrollment()).send();
       expect(fast.status, fast.text).toBe(201);
-      const approved = await request(app)
-        .patch(`/api/v1/admin/face-enrollments/${fast.body.data.id}`)
-        .auth(adminAccess, { type: 'bearer' })
-        .send({
-          status: 'ACTIVE',
-          identity_verified: true,
-          reason: 'Verify concurrent enrollment',
-        });
-      expect(approved.status, approved.text).toBe(204);
+      expect(fast.body.data.status).toBe('ACTIVE');
     } finally {
       release();
     }
