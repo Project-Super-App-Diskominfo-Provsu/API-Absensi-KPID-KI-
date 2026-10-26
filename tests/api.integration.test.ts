@@ -1,4 +1,4 @@
-import { beforeAll, afterAll, beforeEach, describe, it, expect } from 'vitest';
+import { beforeAll, afterAll, beforeEach, describe, it, expect, vi } from 'vitest';
 import { randomUUID, generateKeyPairSync, sign } from 'node:crypto';
 import { migrateDatabase } from '../src/database/migrate.js';
 import { Pool } from 'pg';
@@ -185,12 +185,9 @@ beforeEach(async () => {
   const adminEmail = `${randomUUID()}@example.test`;
   await pool.query('UPDATE users SET email=$2 WHERE id=$1', [user, email]);
   await pool.query('UPDATE users SET email=$2 WHERE id=$1', [admin, adminEmail]);
-  const userLogin = await login(email),
-    adminLogin = await login(adminEmail);
-  expect(userLogin.status, userLogin.text).toBe(200);
-  expect(adminLogin.status, adminLogin.text).toBe(200);
-  access = userLogin.body.data.access_token;
-  adminAccess = adminLogin.body.data.access_token;
+  // Auth-specific cases exercise HTTP login; fixtures avoid exhausting its shared IP limiter.
+  access = (await issueSession(pool, config, user, randomUUID())).access_token;
+  adminAccess = (await issueSession(pool, config, admin, randomUUID())).access_token;
   device = (
     await pool.query(
       "INSERT INTO devices(user_id,public_key,platform,status) VALUES($1,$2,'ANDROID','ACTIVE') RETURNING id",
@@ -1190,7 +1187,15 @@ describe('internal login hardening', () => {
       JWT_SECRET: config.JWT_SECRET,
       SSO_ENABLED: 'false',
     });
-    const scoped = createApp(pool, redis, authConfig);
+    const scoped = createApp(
+      pool,
+      redis,
+      authConfig,
+      undefined,
+      undefined,
+      undefined,
+      async () => false,
+    );
     expect((await request(scoped).get('/health')).status).toBe(200);
     expect((await request(scoped).get('/ready/auth')).status).toBe(200);
     const readiness = await request(scoped).get('/ready');
@@ -2495,6 +2500,217 @@ describe('FCM token lifecycle and check-in reminder worker', () => {
       }
     },
   );
+});
+
+describe('admin attendance review lifecycle', () => {
+  async function pending(purpose: 'CHECK_IN' | 'CHECK_OUT' = 'CHECK_IN') {
+    observation = {
+      ...observation,
+      embedding: embedding.map((_, i) => (i === 0 ? 0.7 : i === 1 ? Math.sqrt(0.51) : 0)),
+    };
+    const response = await (await capture(purpose)).send();
+    expect(response.status, response.text).toBe(202);
+    return response.body.data.attempt_id as string;
+  }
+  const decide = (id: string, status = 'APPROVED', bearer = adminAccess) =>
+    request(app)
+      .patch('/api/v1/admin/attendance-reviews/' + id)
+      .auth(bearer, { type: 'bearer' })
+      .send({
+        status,
+        reason: 'Identity verified with employee at pilot office',
+        identity_verified: status === 'APPROVED',
+      });
+
+  it('allows a placement admin to approve an employee in the same category', async () => {
+    const id = await pending();
+    await pool.query("UPDATE users SET role='ADMIN',employee_category_code='KPID' WHERE id=$1", [
+      admin,
+    ]);
+    const queue = await request(app)
+      .get('/api/v1/admin/attendance-reviews')
+      .auth(adminAccess, { type: 'bearer' });
+    expect(queue.body.meta.total).toBe(1);
+    const response = await decide(id);
+    expect(response.status, response.text).toBe(200);
+    expect(response.body.data.status).toBe('APPROVED');
+  });
+
+  it('stores validated review evidence without photos, embeddings or challenge secrets', async () => {
+    const id = await pending();
+    const row = (
+      await pool.query('SELECT evidence FROM attendance_reviews WHERE attempt_id=$1', [id])
+    ).rows[0];
+    expect(row.evidence.face_score).toBeCloseTo(0.7);
+    for (const key of ['embedding', 'image', 'nonce', 'signature'])
+      expect(JSON.stringify(row.evidence)).not.toContain('"' + key + '"');
+    expect((await pool.query('SELECT id FROM attendances')).rowCount).toBe(0);
+    const queue = await request(app)
+      .get('/api/v1/admin/attendance-reviews')
+      .auth(adminAccess, { type: 'bearer' });
+    expect(queue.status, queue.text).toBe(200);
+    expect(queue.body.meta.total).toBe(1);
+    expect(queue.body.data[0].attempt_id).toBe(id);
+    const beyond = await request(app)
+      .get('/api/v1/admin/attendance-reviews?offset=10')
+      .auth(adminAccess, { type: 'bearer' });
+    expect(beyond.body.data).toEqual([]);
+    expect(beyond.body.meta.total).toBe(1);
+  });
+  it('approves after the GPS freshness window without altering the original attendance time', async () => {
+    const id = await pending();
+    const received = (
+      await pool.query('SELECT received_at FROM attendance_attempts WHERE id=$1', [id])
+    ).rows[0].received_at;
+    workerError = true;
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(received.getTime() + 180000));
+    try {
+      const response = await decide(id);
+      expect(response.status, response.text).toBe(200);
+      expect(response.body.data.attendance.verification_method).toBe('ADMIN_REVIEW');
+      expect(response.body.data.attendance.server_time).toBe(received.toISOString());
+    } finally {
+      vi.useRealTimers();
+    }
+    const attempt = await request(app)
+      .get('/api/v1/attendance/attempts/' + id)
+      .auth(access, { type: 'bearer' });
+    expect(attempt.body.data.status).toBe('ACCEPTED');
+    expect(attempt.body.data.reason_code).toBeNull();
+    expect((await pool.query('SELECT id FROM attendances')).rowCount).toBe(1);
+    expect(
+      (
+        await pool.query(
+          "SELECT id FROM audit_logs WHERE action='ATTENDANCE_REVIEW_APPROVED' AND actor_id=$1",
+          [admin],
+        )
+      ).rowCount,
+    ).toBe(1);
+  });
+  it('rejects without creating attendance and exposes the terminal outcome to the employee', async () => {
+    const id = await pending();
+    const response = await decide(id, 'REJECTED');
+    expect(response.status, response.text).toBe(200);
+    expect((await pool.query('SELECT id FROM attendances')).rowCount).toBe(0);
+    const attempt = await request(app)
+      .get('/api/v1/attendance/attempts/' + id)
+      .auth(access, { type: 'bearer' });
+    expect(attempt.body.data.status).toBe('REJECTED');
+    expect(attempt.body.data.response.error.code).toBe('ATTENDANCE_REVIEW_REJECTED');
+    expect((await decide(id)).status).toBe(409);
+    const detail = await request(app)
+      .get('/api/v1/admin/attendance-reviews/' + id)
+      .auth(adminAccess, { type: 'bearer' });
+    expect(detail.body.data.reason).toContain('Identity verified');
+  });
+  it('serializes duplicate approvals into exactly one attendance record', async () => {
+    const id = await pending();
+    const responses = await Promise.all([decide(id), decide(id)]);
+    expect(responses.map((r) => r.status).sort()).toEqual([200, 409]);
+    expect(
+      (await pool.query('SELECT id FROM attendances WHERE attempt_id=$1', [id])).rowCount,
+    ).toBe(1);
+  });
+  it('refuses approval if a newer valid capture already filled the same attendance slot', async () => {
+    const id = await pending();
+    observation = { ...observation, embedding };
+    expect((await (await capture()).send()).status).toBe(201);
+    const response = await decide(id);
+    expect(response.status, response.text).toBe(409);
+    expect(response.body.error.code).toBe('DUPLICATE_ATTENDANCE');
+    expect(
+      (await pool.query('SELECT status FROM attendance_reviews WHERE attempt_id=$1', [id])).rows[0]
+        .status,
+    ).toBe('PENDING');
+    expect((await decide(id, 'REJECTED')).status).toBe(200);
+  });
+  it('supports checkout review using the original timestamp and existing check-in', async () => {
+    expect((await (await capture()).send()).status).toBe(201);
+    const id = await pending('CHECK_OUT');
+    const response = await decide(id);
+    expect(response.status, response.text).toBe(200);
+    expect(response.body.data.attendance.type).toBe('CHECK_OUT');
+    expect((await pool.query('SELECT id FROM attendances')).rowCount).toBe(2);
+  });
+  it('requires admin role and rejects self-review', async () => {
+    const id = await pending();
+    expect((await request(app).get('/api/v1/admin/attendance-reviews')).status).toBe(401);
+    expect((await decide(id, 'APPROVED', access)).status).toBe(403);
+    await pool.query("UPDATE users SET role='SUPER_ADMIN' WHERE id=$1", [user]);
+    const response = await decide(id, 'APPROVED', access);
+    expect(response.status).toBe(403);
+    expect(response.body.error.code).toBe('SELF_APPROVAL_FORBIDDEN');
+  });
+  it('requires the admin category to match both the event and current user category', async () => {
+    const id = await pending();
+    await pool.query("UPDATE users SET role='ADMIN',employee_category_code='KI' WHERE id=$1", [
+      admin,
+    ]);
+    expect((await decide(id)).status).toBe(403);
+    await pool.query("UPDATE users SET employee_category_code='KI' WHERE id=$1", [user]);
+    expect((await decide(id)).status).toBe(403);
+    const queue = await request(app)
+      .get('/api/v1/admin/attendance-reviews')
+      .auth(adminAccess, { type: 'bearer' });
+    expect(queue.body.meta.total).toBe(0);
+  });
+  it.each([
+    'face reset',
+    'device revoked',
+    'office disabled',
+    'schedule changed',
+    'approved leave',
+    'threshold changed',
+  ])('revalidates context before approval: %s', async (change) => {
+    const id = await pending();
+    let target = app;
+    if (change === 'face reset')
+      await pool.query('DELETE FROM face_templates WHERE user_id=$1', [user]);
+    if (change === 'device revoked')
+      await pool.query("UPDATE devices SET status='REVOKED' WHERE id=$1", [device]);
+    if (change === 'office disabled') await pool.query('UPDATE offices SET active=false');
+    if (change === 'schedule changed')
+      await pool.query('UPDATE work_schedules SET grace_minutes=1 WHERE user_id=$1', [user]);
+    if (change === 'approved leave')
+      await pool.query(
+        "INSERT INTO leave_requests(user_id,category,start_date,end_date,notes,status) VALUES($1,'IZIN',(now() AT TIME ZONE 'Asia/Jakarta')::date,(now() AT TIME ZONE 'Asia/Jakarta')::date,'Approved leave after capture','APPROVED')",
+        [user],
+      );
+    if (change === 'threshold changed')
+      target = createApp(pool, redis, { ...config, FACE_MATCH_THRESHOLD: 0.85 }, engine);
+    const response = await request(target)
+      .patch('/api/v1/admin/attendance-reviews/' + id)
+      .auth(adminAccess, { type: 'bearer' })
+      .send({
+        status: 'APPROVED',
+        reason: 'Verified with employee in person',
+        identity_verified: true,
+      });
+    expect([403, 409]).toContain(response.status);
+    expect((await pool.query('SELECT id FROM attendances')).rowCount).toBe(0);
+    expect(
+      (await pool.query('SELECT status FROM attendance_reviews WHERE attempt_id=$1', [id])).rows[0]
+        .status,
+    ).toBe('PENDING');
+  });
+  it('refuses to approve legacy attempts without evidence but lets a super admin reject them', async () => {
+    const id = (
+      await pool.query(
+        "INSERT INTO attendance_attempts(user_id,idempotency_key,request_hash,purpose,status) VALUES($1,$2,'legacy-request','CHECK_IN','NEEDS_REVIEW') RETURNING id",
+        [user, randomUUID()],
+      )
+    ).rows[0].id;
+    const response = await decide(id);
+    expect(response.status).toBe(409);
+    expect(response.body.error.code).toBe('REVIEW_EVIDENCE_UNAVAILABLE');
+    expect((await decide(id, 'REJECTED')).status).toBe(200);
+  });
+  it('does not allow decisions for attempts rejected by non-biometric gates', async () => {
+    const response = await (await capture('CHECK_IN', { latitude: '3.7' })).send();
+    expect(response.status).toBe(422);
+    expect((await decide(response.body.attempt_id)).status).toBe(404);
+  });
 });
 
 describe('leave authorization, attendance conflicts and concurrency', () => {

@@ -12,6 +12,8 @@ import { type FaceEngine } from '../face/face.types.js';
 import { decrypt, hash, verifyDeviceSignature } from '../../shared/security/crypto.js';
 import { ApiError, fail } from '../../shared/errors/api-error.js';
 import type { User } from '../auth/auth.model.js';
+import { saveReviewEvidence } from './attendance.review.model.js';
+import { attendanceReviewEvidence } from './attendance.review.schema.js';
 import {
   findUserCategoryAndActive,
   findWorkScheduleForDate,
@@ -32,6 +34,20 @@ import {
 } from './attendance.model.js';
 
 export type Purpose = 'CHECK_IN' | 'CHECK_OUT';
+
+export function attendanceStatus(
+  purpose: Purpose,
+  received: Date,
+  schedule: { starts_at: string; ends_at: string; grace_minutes: number },
+) {
+  return purpose === 'CHECK_IN'
+    ? received.getTime() > new Date(schedule.starts_at).getTime() + schedule.grace_minutes * 60000
+      ? 'LATE'
+      : 'PRESENT'
+    : received.getTime() < new Date(schedule.ends_at).getTime()
+      ? 'EARLY_LEAVE'
+      : 'ON_TIME';
+}
 
 export interface AttendanceInputData {
   latitude: number;
@@ -114,7 +130,7 @@ export async function resolveAttendanceContext(
 
   const faces = await findActiveFaceTemplate(db, userId);
   const template = faces.rows[0];
-  if (!template) fail(409, 'FACE_NOT_ENROLLED', 'Wajah belum terdaftar dan disetujui.');
+  if (!template) fail(409, 'FACE_NOT_ENROLLED', 'Wajah belum terdaftar aktif.');
   if (template.model_version !== config.FACE_MODEL_VERSION) {
     fail(409, 'FACE_REENROLL_REQUIRED', 'Model berubah. Enrollment ulang diperlukan.');
   }
@@ -235,6 +251,34 @@ export async function recordAttendance(
       }
 
       if (score < policy.match) {
+        await saveReviewEvidence(
+          db,
+          reservation.id,
+          final.category,
+          attendanceReviewEvidence.parse({
+            schedule: {
+              id: final.schedule.id,
+              starts_at: new Date(final.schedule.starts_at).toISOString(),
+              ends_at: new Date(final.schedule.ends_at).toISOString(),
+              grace_minutes: final.schedule.grace_minutes,
+            },
+            template_id: final.template.id,
+            location: {
+              latitude: input.latitude,
+              longitude: input.longitude,
+              accuracy_m: input.accuracy_m,
+              captured_at: input.captured_at,
+              device_id: input.device_id,
+              office_id: final.office.id,
+              is_mock: input.is_mock,
+            },
+            office: snapshotOffice(final.office),
+            face_score: score,
+            liveness_score: observation.liveness_score,
+            quality_score: observation.quality_score,
+            policy,
+          }),
+        );
         const body = {
           data: {
             attempt_id: reservation.id,
@@ -249,15 +293,7 @@ export async function recordAttendance(
         return { status: 202, body };
       }
 
-      const status =
-        purpose === 'CHECK_IN'
-          ? received.getTime() >
-            new Date(final.schedule.starts_at).getTime() + final.schedule.grace_minutes * 60000
-            ? 'LATE'
-            : 'PRESENT'
-          : received.getTime() < new Date(final.schedule.ends_at).getTime()
-            ? 'EARLY_LEAVE'
-            : 'ON_TIME';
+      const status = attendanceStatus(purpose, received, final.schedule);
 
       const inserted = await insertAttendanceRecord(db, {
         userId: user.id,

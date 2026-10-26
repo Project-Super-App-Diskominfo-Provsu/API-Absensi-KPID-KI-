@@ -14,6 +14,12 @@ import {
 } from './attendance.service.js';
 
 import { attendanceInput, attendanceHistoryQuerySchema } from './attendance.schema.js';
+import { attendanceReviewInput, attendanceReviewQuery } from './attendance.review.schema.js';
+import {
+  listAttendanceReviews,
+  getAttendanceReview,
+  decideAttendanceReview,
+} from './attendance.review.service.js';
 
 export function createAttendanceController(pool: Pool, config: Config, engine: FaceEngine) {
   async function handleAttendance(purpose: Purpose, req: Request, res: Response) {
@@ -33,6 +39,29 @@ export function createAttendanceController(pool: Pool, config: Config, engine: F
   }
 
   return {
+    async listReviews(req: Request, res: Response) {
+      const result = await listAttendanceReviews(
+        pool,
+        currentUser(req),
+        attendanceReviewQuery.parse(req.query),
+      );
+      res.json({ data: result.data, meta: result.meta });
+    },
+    async getReview(req: Request, res: Response) {
+      res.json({
+        data: await getAttendanceReview(pool, currentUser(req), z.uuid().parse(req.params.id)),
+      });
+    },
+    async decideReview(req: Request, res: Response) {
+      const data = await decideAttendanceReview(
+        pool,
+        config,
+        currentUser(req),
+        z.uuid().parse(req.params.id),
+        attendanceReviewInput.parse(req.body),
+      );
+      res.json({ data });
+    },
     checkIn: (req: Request, res: Response) => handleAttendance('CHECK_IN', req, res),
     checkOut: (req: Request, res: Response) => handleAttendance('CHECK_OUT', req, res),
 

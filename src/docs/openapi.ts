@@ -281,6 +281,18 @@ export const openapi = {
         identity_verified: { type: 'boolean' },
         reason: { ...str, minLength: 5, maxLength: 500 },
       }),
+      AttendanceReviewDecision: {
+        ...object(
+          {
+            status: { enum: ['APPROVED', 'REJECTED'] },
+            reason: { ...str, minLength: 5, maxLength: 500 },
+            identity_verified: { type: 'boolean', default: false },
+          },
+          ['status', 'reason'],
+        ),
+        description:
+          'APPROVED memerlukan identity_verified=true; admin memverifikasi identitas di luar foto aplikasi. Tidak melewati validasi lokasi/liveness/perangkat/jadwal.',
+      },
       Reason: object({ reason: { ...str, minLength: 5, maxLength: 500 } }),
       HolidayInput: object(
         {
@@ -653,6 +665,32 @@ export const openapi = {
       get: operation('Riwayat absensi sah; batas tanggal WIB inklusif', {
         parameters: [...range, ...pagination],
       }),
+    },
+    '/admin/attendance-reviews': {
+      get: operation(
+        'Antrean/riwayat review absensi; lingkup kategori saat kejadian dan kategori pegawai sekarang',
+        {
+          parameters: [
+            ...pagination,
+            {
+              name: 'status',
+              in: 'query',
+              schema: { enum: ['PENDING', 'APPROVED', 'REJECTED'], default: 'PENDING' },
+            },
+            { name: 'user_id', in: 'query', schema: uuid },
+          ],
+        },
+      ),
+    },
+    '/admin/attendance-reviews/{id}': {
+      get: operation(
+        'Detail review tanpa foto, embedding, nonce atau signature; id adalah attempt_id',
+        { id: true },
+      ),
+      patch: operation(
+        'Selesaikan NEEDS_REVIEW; alasan wajib, verifikasi identitas untuk APPROVED, larangan review sendiri',
+        { id: true, body: 'AttendanceReviewDecision' },
+      ),
     },
     '/admin/audit-logs': {
       get: operation('SUPER_ADMIN: audit log append-only', { parameters: pagination }),

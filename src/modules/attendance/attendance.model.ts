@@ -186,7 +186,7 @@ export async function insertAttendanceRecord(
 
 export async function updateAttemptAccepted(db: Db, attemptId: string, response: unknown) {
   return db.query(
-    "UPDATE attendance_attempts SET status='ACCEPTED',http_status=201,response=$2,completed_at=now() WHERE id=$1",
+    "UPDATE attendance_attempts SET status='ACCEPTED',reason_code=NULL,http_status=201,response=$2,completed_at=now() WHERE id=$1",
     [attemptId, response],
   );
 }

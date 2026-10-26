@@ -6,11 +6,11 @@ Struktur modul, tanggung jawab setiap lapisan, dan aturan dependency dijelaskan 
 
 ## Status implementasi
 
-Tersedia: autentikasi JWT dengan refresh rotation dan pencabutan keluarga sesi saat reuse, CRUD pegawai terbatas kewenangan, kategori KPID/KI, unit, konfigurasi tiga kantor, pengajuan/persetujuan perangkat Ed25519, jadwal aktual per tanggal kerja, enrollment 3–5 foto dengan persetujuan identitas, penghapusan template, check-in/check-out, idempotency persisten, nonce sekali pakai, riwayat, audit append-only, OpenAPI, health/readiness, dan worker ONNX.
+Tersedia: autentikasi JWT dengan refresh rotation dan pencabutan keluarga sesi saat reuse, CRUD pegawai terbatas kewenangan, kategori KPID/KI, unit, konfigurasi tiga kantor, pengajuan/persetujuan perangkat Ed25519, jadwal aktual per tanggal kerja, enrollment mandiri 3–5 foto langsung aktif setelah validasi, penghapusan template, check-in/check-out, review admin untuk NEEDS_REVIEW, idempotency persisten, nonce sekali pakai, riwayat, audit append-only, OpenAPI, health/readiness, dan worker ONNX.
 
 Ketiga kantor di-seed **nonaktif dengan pusat dari pin Google Maps pengguna dan polygon 50 meter** (migration 007, untuk kantor yang belum dikonfigurasi). Tidak ada akun atau password admin bawaan. Tidak ada model biometrik yang diunduh otomatis. Absensi belum dapat digunakan operasional sampai kantor, jadwal, perangkat, enrollment, model, dan threshold sudah siap.
 
-Belum tersedia: persetujuan koreksi/manual, penyelesaian administratif status `NEEDS_REVIEW`, ekspor CSV/XLSX, impor massal, integrasi Play Integrity, pengujian Google SSO/FCM dengan perangkat nyata, object storage, serta uji akurasi/PAD dan benchmark dengan model operasional. Jangan menganggap target FAR/FRR atau p95 pada PRD telah terbukti. Foto hanya diproses di memori dan tidak disimpan; bukti visual untuk review belum tersedia.
+Belum tersedia: koreksi absensi manual di luar attempt NEEDS_REVIEW, ekspor CSV/XLSX, impor massal, integrasi Play Integrity, pengujian Google SSO/FCM dengan perangkat nyata, object storage, serta uji akurasi/PAD dan benchmark dengan model operasional. Jangan menganggap target FAR/FRR atau p95 pada PRD telah terbukti. Foto hanya diproses di memori dan tidak disimpan; verifikasi identitas oleh admin pada review memerlukan pemeriksaan langsung atau bukti di luar foto aplikasi. Lihat [alur enrollment dan review](docs/attendance-review.md).
 
 Pengingat check-in FCM tersedia melalui worker terpisah dan token perangkat bersignature, diikat ke keluarga sesi Android. Untuk jadwal 08.00 WIB dengan toleransi 0, pengingat dikirim mulai 07.55 hanya bagi pegawai yang belum check-in. Fitur default nonaktif dan memerlukan migration 012. Lihat [kontrak FE dan deployment notifikasi](docs/fcm.md).
 
@@ -69,7 +69,7 @@ Google native dapat menautkan login pertama ke email pegawai yang sudah terdafta
 3. Buat jadwal pegawai melalui `POST /api/v1/admin/schedules`. `work_date` adalah tanggal WIB; `starts_at` dan `ends_at` harus berupa ISO datetime dengan offset. Implementasi awal mendukung satu jadwal per pegawai per tanggal WIB dan tidak mendukung shift lintas tanggal.
 4. Android membuat pasangan kunci Ed25519, mengajukan perangkat, kemudian admin lain menyetujuinya. Approval mengganti perangkat aktif lama secara atomik.
 5. Siapkan worker dan threshold; pegawai meminta challenge `ENROLL`, mengambil 3–5 foto berbeda, mencatat persetujuan pemrosesan, lalu mengajukan enrollment.
-6. Admin lain memverifikasi identitas secara langsung/terawasi sebelum menyetujui template. Kunci perangkat dan template tidak bisa disetujui sendiri.
+6. Enrollment baru langsung ACTIVE setelah validasi server, tanpa persetujuan admin. Perangkat tetap harus ACTIVE; persetujuan perangkat dan reset wajah oleh admin tetap berlaku. Template PENDING dari versi lama dipertahankan dan dapat ditinjau melalui endpoint admin lama.
 7. Pegawai meminta challenge `CHECK_IN`/`CHECK_OUT`, mengambil lokasi baru dan selfie, menandatangani payload, lalu mengirim absensi.
 
 Admin biasa hanya mengelola pegawai/perangkat/enrollment berkategori sama dengan peran EMPLOYEE/VERIFIER. Pengelolaan kantor, unit, role istimewa, dan audit global hanya untuk SUPER_ADMIN. Tidak ada endpoint publik registrasi akun atau penggantian kategori sendiri.
@@ -130,6 +130,8 @@ const payload = JSON.stringify({
 Nilai latitude/longitude/accuracy pada multipart adalah string desimal biasa, tanpa notasi eksponen. `signature` tidak ikut ditandatangani. `Idempotency-Key` berisi 16–100 karakter huruf, angka, `_`, atau `-`; UUID bisa digunakan. `office_id` opsional. Jika tidak diisi, server memilih kantor aktif yang diizinkan, memenuhi kualitas GPS, dan berada dalam radius, berdasarkan jarak lalu kode kantor.
 
 Jika koneksi terputus, ulangi **file, semua field, dan key yang sama** untuk mendapatkan hasil tersimpan. Jangan mengubah timestamp atau mengambil selfie baru dengan key lama. HTTP 202 `PROCESSING` berarti tunggu dan cek `GET /attendance/attempts/:id`; `NEEDS_REVIEW` berarti belum ada absensi sah. Key sama dengan isi berbeda menghasilkan 409 `IDEMPOTENCY_CONFLICT`. Challenge terpakai tidak dapat dipakai untuk operasi baru.
+
+Admin menyelesaikan NEEDS_REVIEW melalui `GET/PATCH /api/v1/admin/attendance-reviews/:attempt_id`; daftar tersedia pada `GET /api/v1/admin/attendance-reviews`. APPROVED menghasilkan attendance memakai waktu request asli dan `verification_method=ADMIN_REVIEW`. REJECTED tidak membuat attendance. Mobile memeriksa hasil terminal melalui endpoint attempt yang sama, tanpa login ulang atau mengirim foto lagi. Jalankan migration 015 sebelum rollout; attempt lama tanpa bukti validasi hanya dapat ditolak SUPER_ADMIN, tidak dapat disetujui otomatis.
 
 Jam absensi adalah waktu server menerima request yang lolos parsing/upload; waktu selesai inferensi tidak membuat pegawai terlambat. Maksimum usia GPS tetap diperiksa. Retry identik mengembalikan waktu dan hasil awal. Tidak ada mode offline.
 

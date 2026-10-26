@@ -74,7 +74,10 @@ describe('database migrations', () => {
       [user.id],
     );
     const schedules = (await pool.query('SELECT * FROM work_schedules')).rows;
-    expect(await migrateDatabase(pool)).toEqual(['014_correct_2026_holidays.sql']);
+    expect(await migrateDatabase(pool)).toEqual([
+      '014_correct_2026_holidays.sql',
+      '015_attendance_reviews.sql',
+    ]);
     expect(
       (await pool.query("SELECT * FROM schema_migrations WHERE name<'014_' ORDER BY name")).rows,
     ).toEqual(ledger);
@@ -138,6 +141,7 @@ describe('database migrations', () => {
       '012_checkin_notifications.sql',
       '013_holidays_and_leaves.sql',
       '014_correct_2026_holidays.sql',
+      '015_attendance_reviews.sql',
     ]);
     expect((await pool.query('SELECT * FROM users')).rows).toEqual(beforeUsers);
     expect((await pool.query('SELECT * FROM refresh_sessions')).rows).toEqual(beforeSessions);
@@ -158,6 +162,7 @@ describe('database migrations', () => {
     expect(await migrateDatabase(pool)).toEqual([
       '013_holidays_and_leaves.sql',
       '014_correct_2026_holidays.sql',
+      '015_attendance_reviews.sql',
     ]);
     expect((await pool.query('SELECT * FROM users')).rows).toEqual(beforeUsers);
     expect((await pool.query('SELECT 1 FROM holidays')).rowCount).toBeGreaterThan(0);
@@ -182,6 +187,7 @@ describe('database migrations', () => {
       '012_checkin_notifications.sql',
       '013_holidays_and_leaves.sql',
       '014_correct_2026_holidays.sql',
+      '015_attendance_reviews.sql',
     ]);
     const { google_email_linking_allowed, ...after } = (await pool.query('SELECT * FROM users'))
       .rows[0];
@@ -214,6 +220,7 @@ describe('database migrations', () => {
       '012_checkin_notifications.sql',
       '013_holidays_and_leaves.sql',
       '014_correct_2026_holidays.sql',
+      '015_attendance_reviews.sql',
     ]);
     const { client_type, ...after } = (await pool.query('SELECT * FROM refresh_sessions')).rows[0];
     expect(client_type).toBe('MOBILE');
@@ -317,6 +324,7 @@ describe('database migrations', () => {
       '012_checkin_notifications.sql',
       '013_holidays_and_leaves.sql',
       '014_correct_2026_holidays.sql',
+      '015_attendance_reviews.sql',
     ]);
     expect((await pool.query('SELECT * FROM work_schedules')).rows).toEqual(corrected);
     expect(
@@ -357,6 +365,7 @@ describe('database migrations', () => {
       '012_checkin_notifications.sql',
       '013_holidays_and_leaves.sql',
       '014_correct_2026_holidays.sql',
+      '015_attendance_reviews.sql',
     ]);
     const afterOffices = (await pool.query('SELECT * FROM offices ORDER BY id')).rows;
     expect(afterOffices.map(({ polygon, address, ...rest }) => rest)).toEqual(offices);
@@ -365,7 +374,7 @@ describe('database migrations', () => {
     expect(
       (
         await pool.query(
-          "SELECT * FROM schema_migrations WHERE name NOT IN ('004_postgis_geofencing.sql', '005_office_polygon.sql', '006_office_geofence_policy.sql', '007_office_map_centers.sql', '008_face_enrollment_version.sql', '009_same_day_schedules.sql', '010_web_and_google_auth.sql', '011_google_email_linking.sql', '012_checkin_notifications.sql', '013_holidays_and_leaves.sql', '014_correct_2026_holidays.sql') ORDER BY name",
+          "SELECT * FROM schema_migrations WHERE name NOT IN ('004_postgis_geofencing.sql', '005_office_polygon.sql', '006_office_geofence_policy.sql', '007_office_map_centers.sql', '008_face_enrollment_version.sql', '009_same_day_schedules.sql', '010_web_and_google_auth.sql', '011_google_email_linking.sql', '012_checkin_notifications.sql', '013_holidays_and_leaves.sql', '014_correct_2026_holidays.sql', '015_attendance_reviews.sql') ORDER BY name",
         )
       ).rows,
     ).toEqual(ledger);
@@ -439,6 +448,7 @@ describe('database migrations', () => {
       '012_checkin_notifications.sql',
       '013_holidays_and_leaves.sql',
       '014_correct_2026_holidays.sql',
+      '015_attendance_reviews.sql',
     ]);
     expect((await pool.query('SELECT name,checksum FROM schema_migrations')).rowCount).toBe(
       currentMigrationCount,
